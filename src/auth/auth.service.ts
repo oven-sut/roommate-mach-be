@@ -6,12 +6,16 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
+import { OAuth2Client } from 'google-auth-library';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { GoogleLoginDto } from './dto/google-login.dto';
 
 @Injectable()
 export class AuthService {
+  private readonly googleClient = new OAuth2Client();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -59,9 +63,68 @@ export class AuthService {
       where: { email: dto.email },
     });
 
-    if (!user || !(await compare(dto.password, user.passwordHash))) {
+    if (!user?.passwordHash || !(await compare(dto.password, user.passwordHash))) {
       throw new UnauthorizedException('Invalid email or password');
     }
+
+    return this.buildAuthResponse({
+      id: user.id,
+      displayName: user.displayName,
+      email: user.email,
+      createdAt: user.createdAt,
+    });
+  }
+
+  async googleLogin(dto: GoogleLoginDto) {
+    const audiences = process.env.GOOGLE_CLIENT_IDS?.split(',')
+      .map((clientId) => clientId.trim())
+      .filter(Boolean);
+
+    if (!audiences?.length) {
+      throw new UnauthorizedException('Google Sign-In is not configured');
+    }
+
+    let payload;
+    try {
+      const ticket = await this.googleClient.verifyIdToken({
+        idToken: dto.idToken,
+        audience: audiences,
+      });
+      payload = ticket.getPayload();
+    } catch {
+      throw new UnauthorizedException('Invalid Google ID token');
+    }
+
+    if (!payload?.sub || !payload.email || !payload.email_verified) {
+      throw new UnauthorizedException('Google account email is not verified');
+    }
+
+    const email = payload.email.toLowerCase();
+    if (!email.endsWith('@g.sut.ac.th')) {
+      throw new UnauthorizedException('Only SUT student accounts are allowed');
+    }
+
+    const existingByGoogleId = await this.prisma.user.findFirst({
+      where: { googleId: payload.sub },
+    });
+    const existingByEmail = existingByGoogleId
+      ? null
+      : await this.prisma.user.findUnique({ where: { email } });
+
+    const user = existingByGoogleId
+      ? existingByGoogleId
+      : existingByEmail
+        ? await this.prisma.user.update({
+            where: { id: existingByEmail.id },
+            data: { googleId: payload.sub },
+          })
+        : await this.prisma.user.create({
+            data: {
+              googleId: payload.sub,
+              email,
+              displayName: payload.name?.trim() || email.split('@')[0],
+            },
+          });
 
     return this.buildAuthResponse({
       id: user.id,
