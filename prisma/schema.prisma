@@ -57,7 +57,18 @@ model User {
   blocksMade Block[] @relation("Blocker")
   blocksReceived Block[] @relation("Blocked")
   passwordResets PasswordReset[]
+  pushTokens PushToken[]
   @@map("users")
+}
+
+model PushToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  device    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model PasswordReset {
