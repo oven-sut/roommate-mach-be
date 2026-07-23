@@ -42,7 +42,7 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   profile Profile?
-  questionnaire Questionnaire?
+  answers Answer[]
   verification Verification?
   sentSwipes Swipe[] @relation("SwipeSender")
   receivedSwipes Swipe[] @relation("SwipeTarget")
@@ -100,13 +100,38 @@ model Profile {
   updatedAt DateTime @updatedAt
 }
 
-model Questionnaire {
-  id String @id @default(uuid())
-  userId String @unique
-  user User @relation(fields:[userId], references:[id], onDelete:Cascade)
-  answers Json
-  completed Boolean @default(false)
-  updatedAt DateTime @updatedAt
+model Question {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  step      Int
+  title     String
+  sub       String
+  note      String?
+  groups    QuestionGroup[]
+  answers   Answer[]
+}
+
+model QuestionGroup {
+  id         String   @id @default(uuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  label      String
+  items      String[]
+  active     Int[]
+  order      Int
+}
+
+model Answer {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  selections Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  @@unique([userId, questionId])
 }
 
 model Verification {

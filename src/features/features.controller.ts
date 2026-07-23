@@ -9,6 +9,7 @@ export class FeaturesController {
  @Get('me') me(@Req() r:any){return this.f.me(r.user.id)}
  @Patch('me') updateMe(@Req()r:any,@Body()b:any){return this.f.updateMe(r.user.id,b)}
  @Put('profile') profile(@Req()r:any,@Body()b:any){return this.f.profile(r.user.id,b)}
+ @Get('questionnaire') getQuestionnaire(){return this.f.getQuestionnaire()}
  @Put('questionnaire') questionnaire(@Req()r:any,@Body()b:any){return this.f.questionnaire(r.user.id,b.answers,b.completed)}
  @Post('verification') verification(@Req()r:any,@Body()b:any){return this.f.verification(r.user.id,b.documentUrl)}
  @Get('discover') discover(@Req()r:any){return this.f.discover(r.user.id)}
