@@ -10,8 +10,8 @@ export class FeaturesService {
   me(userId: string) {
     return this.prisma.user.findUnique({ where: { id: userId }, select: { id:true,displayName:true,email:true,role:true,discoverable:true,notificationPrefs:true,createdAt:true,profile:true,questionnaire:true,verification:true } });
   }
-  updateMe(userId:string, data:{displayName?:string;discoverable?:boolean;notificationPrefs?:Record<string,boolean>}) {
-    return this.prisma.user.update({ where:{id:userId}, data:{...data,notificationPrefs:data.notificationPrefs as Prisma.InputJsonValue}, select:{id:true,displayName:true,email:true,discoverable:true,notificationPrefs:true} });
+  updateMe(userId:string, data:{displayName?:string;discoverable?:boolean;pushToken?:string;notificationPrefs?:Record<string,boolean>}) {
+    return this.prisma.user.update({ where:{id:userId}, data:{...data,notificationPrefs:data.notificationPrefs as Prisma.InputJsonValue}, select:{id:true,displayName:true,email:true,discoverable:true,notificationPrefs:true,pushToken:true} });
   }
   profile(userId:string, data:any) {
     const clean={ age:data.age,major:data.major,gender:data.gender,bio:data.bio,year:data.year,roomType:data.roomType,roommateGender:data.roommateGender,zone:data.zone,budgetMin:data.budgetMin,budgetMax:data.budgetMax,photos:data.photos??[],completed:Boolean(data.completed) };

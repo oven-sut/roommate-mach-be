@@ -35,6 +35,7 @@ model User {
   email String @unique
   passwordHash String?
   googleId String?
+  pushToken String?
   role Role @default(USER)
   suspended Boolean @default(false)
   discoverable Boolean @default(true)
