@@ -52,7 +52,7 @@ export class FeaturesService {
       },
     });
   }
-  profile(userId: string, data: any) {
+  profile(userId: string, data: Record<string, any>) {
     const clean = {
       age: data.age,
       major: data.major,
@@ -373,7 +373,7 @@ export class FeaturesService {
       select: { id: true },
     });
   }
-  ensureAdmin(user: any) {
+  ensureAdmin(user: { role: Role }) {
     if (user.role !== Role.ADMIN) throw new ForbiddenException('Admin only');
   }
   dashboard() {

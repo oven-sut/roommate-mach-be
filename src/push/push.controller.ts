@@ -1,6 +1,7 @@
 import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import { PushService } from './push.service';
 import { AuthGuard } from '../features/auth.guard';
+import type { AuthReq } from '../features/features.controller';
 
 @Controller('push')
 @UseGuards(AuthGuard)
@@ -8,7 +9,7 @@ export class PushController {
   constructor(private readonly pushService: PushService) {}
 
   @Post('register')
-  register(@Req() r: any, @Body() b: { token: string; device?: string }) {
+  register(@Req() r: AuthReq, @Body() b: { token: string; device?: string }) {
     if (!b.token) {
       throw new Error('Token is required');
     }
@@ -16,7 +17,7 @@ export class PushController {
   }
 
   @Post('unregister')
-  unregister(@Req() r: any, @Body() b: { token: string }) {
+  unregister(@Req() r: AuthReq, @Body() b: { token: string }) {
     if (!b.token) {
       throw new Error('Token is required');
     }
