@@ -8,7 +8,13 @@ import { FeaturesModule } from './features/features.module';
 import { PushModule } from './push/push.module';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, AuthModule, FeaturesModule, PushModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    PrismaModule,
+    AuthModule,
+    FeaturesModule,
+    PushModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })

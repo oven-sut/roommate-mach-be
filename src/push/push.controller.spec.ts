@@ -44,7 +44,11 @@ describe('PushController', () => {
     const req = { user: { id: 'user1' } };
     const body = { token: 'token123', device: 'android' };
     const result = await controller.register(req, body);
-    expect(pushService.registerToken).toHaveBeenCalledWith('user1', 'token123', 'android');
+    expect(pushService.registerToken).toHaveBeenCalledWith(
+      'user1',
+      'token123',
+      'android',
+    );
     expect(result).toBe(true);
   });
 
@@ -53,7 +57,10 @@ describe('PushController', () => {
     const req = { user: { id: 'user1' } };
     const body = { token: 'token123' };
     const result = await controller.unregister(req, body);
-    expect(pushService.unregisterToken).toHaveBeenCalledWith('user1', 'token123');
+    expect(pushService.unregisterToken).toHaveBeenCalledWith(
+      'user1',
+      'token123',
+    );
     expect(result).toBe(true);
   });
 
