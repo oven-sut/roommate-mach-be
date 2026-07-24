@@ -34,14 +34,24 @@ describe('PushService', () => {
   });
 
   it('should register a token via upsert', async () => {
-    mockPrisma.pushToken.upsert.mockResolvedValue({ id: '1', userId: 'user1', token: 'token123', device: 'iphone' });
+    mockPrisma.pushToken.upsert.mockResolvedValue({
+      id: '1',
+      userId: 'user1',
+      token: 'token123',
+      device: 'iphone',
+    });
     const res = await service.registerToken('user1', 'token123', 'iphone');
     expect(prisma.pushToken.upsert).toHaveBeenCalledWith({
       where: { token: 'token123' },
       update: { userId: 'user1', device: 'iphone' },
       create: { userId: 'user1', token: 'token123', device: 'iphone' },
     });
-    expect(res).toEqual({ id: '1', userId: 'user1', token: 'token123', device: 'iphone' });
+    expect(res).toEqual({
+      id: '1',
+      userId: 'user1',
+      token: 'token123',
+      device: 'iphone',
+    });
   });
 
   it('should unregister a token via deleteMany', async () => {

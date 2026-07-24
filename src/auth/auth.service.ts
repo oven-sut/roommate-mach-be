@@ -38,7 +38,10 @@ export class AuthService {
           displayName: dto.displayName,
           email: dto.email,
           passwordHash: await hash(dto.password, 12),
-          role: dto.email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase() ? 'ADMIN' : 'USER',
+          role:
+            dto.email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase()
+              ? 'ADMIN'
+              : 'USER',
         },
         select: {
           id: true,
@@ -66,14 +69,23 @@ export class AuthService {
       where: { email: dto.email },
     });
 
-    if (!user?.passwordHash || !(await compare(dto.password, user.passwordHash))) {
+    if (
+      !user?.passwordHash ||
+      !(await compare(dto.password, user.passwordHash))
+    ) {
       throw new UnauthorizedException('Invalid email or password');
     }
-    if (user.suspended) throw new UnauthorizedException('This account is suspended');
+    if (user.suspended)
+      throw new UnauthorizedException('This account is suspended');
 
-    const authenticatedUser = user.email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase() && user.role !== 'ADMIN'
-      ? await this.prisma.user.update({ where: { id: user.id }, data: { role: 'ADMIN' } })
-      : user;
+    const authenticatedUser =
+      user.email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase() &&
+      user.role !== 'ADMIN'
+        ? await this.prisma.user.update({
+            where: { id: user.id },
+            data: { role: 'ADMIN' },
+          })
+        : user;
     return this.buildAuthResponse({
       id: authenticatedUser.id,
       displayName: authenticatedUser.displayName,
@@ -84,22 +96,42 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
-    const user = await this.prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase() },
+    });
     if (!user) return { ok: true };
     const token = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    await this.prisma.passwordReset.create({ data: { userId: user.id, tokenHash, expiresAt: new Date(Date.now() + 15 * 60_000) } });
-    return process.env.NODE_ENV === 'production' ? { ok: true } : { ok: true, resetToken: token };
+    await this.prisma.passwordReset.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      },
+    });
+    return process.env.NODE_ENV === 'production'
+      ? { ok: true }
+      : { ok: true, resetToken: token };
   }
 
   async resetPassword(token: string, password: string) {
-    if (password.length < 8) throw new UnauthorizedException('Password must be at least 8 characters');
+    if (password.length < 8)
+      throw new UnauthorizedException('Password must be at least 8 characters');
     const tokenHash = createHash('sha256').update(token).digest('hex');
-    const reset = await this.prisma.passwordReset.findUnique({ where: { tokenHash } });
-    if (!reset || reset.usedAt || reset.expiresAt < new Date()) throw new UnauthorizedException('Reset token is invalid or expired');
+    const reset = await this.prisma.passwordReset.findUnique({
+      where: { tokenHash },
+    });
+    if (!reset || reset.usedAt || reset.expiresAt < new Date())
+      throw new UnauthorizedException('Reset token is invalid or expired');
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: reset.userId }, data: { passwordHash: await hash(password, 12) } }),
-      this.prisma.passwordReset.update({ where: { id: reset.id }, data: { usedAt: new Date() } }),
+      this.prisma.user.update({
+        where: { id: reset.userId },
+        data: { passwordHash: await hash(password, 12) },
+      }),
+      this.prisma.passwordReset.update({
+        where: { id: reset.id },
+        data: { usedAt: new Date() },
+      }),
     ]);
     return { ok: true };
   }
