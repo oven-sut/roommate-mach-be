@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -38,8 +39,8 @@ export class FeaturesController {
   @Post('verification') verification(@Req() r: any, @Body() b: any) {
     return this.f.verification(r.user.id, b.documentUrl);
   }
-  @Get('discover') discover(@Req() r: any) {
-    return this.f.discover(r.user.id);
+  @Get('discover') discover(@Req() r: any, @Query('page') page?: string) {
+    return this.f.discover(r.user.id, page);
   }
   @Post('swipes/:userId') swipe(
     @Req() r: any,

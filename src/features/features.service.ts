@@ -112,40 +112,59 @@ export class FeaturesService {
       update: { documentUrl, status: 'PENDING' },
     });
   }
-  async discover(userId: string) {
-    const me = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        answers: true,
-        blocksMade: true,
-        blocksReceived: true,
-        sentSwipes: true,
-      },
-    });
-    if (!me) throw new NotFoundException();
-    const excluded = [
-      userId,
-      ...me.blocksMade.map((x) => x.blockedId),
-      ...me.blocksReceived.map((x) => x.blockerId),
-      ...me.sentSwipes.map((x) => x.toId),
-    ];
+  async discover(userId: string, page?: string) {
+    const pageNum = Math.max(1, parseInt(page as string) || 1);
+    const limit = 30;
+    const offset = (pageNum - 1) * limit;
+
+    const rawUsers = await this.prisma.$queryRaw<
+      Array<{ id: string; score: number }>
+    >`
+      SELECT u.id,
+        COALESCE(
+          55 + (40.0 * 
+            SUM(CASE WHEN a1.selections = a2.selections THEN 1 ELSE 0 END) 
+            / NULLIF(COUNT(a1."questionId"), 0)
+          ), 
+        70) as score
+      FROM users u
+      LEFT JOIN "Answer" a2 ON a2."userId" = u.id
+      LEFT JOIN "Answer" a1 ON a1."questionId" = a2."questionId" AND a1."userId" = ${userId}
+      WHERE u.id != ${userId}
+        AND u.role = 'USER'
+        AND u.suspended = false
+        AND u.discoverable = true
+        AND EXISTS (SELECT 1 FROM "Profile" p WHERE p."userId" = u.id AND p.completed = true)
+        AND u.id NOT IN (
+          SELECT "blockedId" FROM "Block" WHERE "blockerId" = ${userId}
+          UNION
+          SELECT "blockerId" FROM "Block" WHERE "blockedId" = ${userId}
+          UNION
+          SELECT "toId" FROM "Swipe" WHERE "fromId" = ${userId}
+        )
+      GROUP BY u.id
+      ORDER BY score DESC, u.id ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    if (!rawUsers.length) return [];
+
+    const userIds = rawUsers.map((r) => r.id);
+    const scoreMap = new Map(
+      rawUsers.map((r) => [r.id, Math.round(Number(r.score))]),
+    );
+
     const users = await this.prisma.user.findMany({
-      where: {
-        id: { notIn: excluded },
-        role: 'USER',
-        suspended: false,
-        discoverable: true,
-        profile: { completed: true },
-      },
+      where: { id: { in: userIds } },
       include: { profile: true, answers: true, verification: true },
-      take: 30,
     });
+
     return users
       .map((user) => ({
         ...user,
         passwordHash: undefined,
         googleId: undefined,
-        score: this.score(me.answers, user.answers),
+        score: scoreMap.get(user.id) || 70,
       }))
       .sort((a, b) => b.score - a.score);
   }
