@@ -3,7 +3,7 @@ import { PushService } from './push.service';
 import { AuthGuard } from '../features/auth.guard';
 import type { AuthReq } from '../features/features.controller';
 
-@Controller('push')
+@Controller(['push', 'api/push'])
 @UseGuards(AuthGuard)
 export class PushController {
   constructor(private readonly pushService: PushService) {}

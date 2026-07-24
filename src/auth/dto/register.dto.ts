@@ -1,5 +1,12 @@
 import { Transform } from 'class-transformer';
-import { IsEmail, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class RegisterDto {
   @IsString()
@@ -16,6 +23,16 @@ export class RegisterDto {
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )
   email: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^b\d{7,8}$/i, {
+    message: 'sutId must be a valid SUT student ID',
+  })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  sutId?: string;
 
   @IsString()
   @MinLength(8, { message: 'password must be at least 8 characters' })
