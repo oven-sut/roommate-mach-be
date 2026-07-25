@@ -10,12 +10,12 @@ async function bootstrap() {
   });
   app.use(json({ limit: '12mb' }));
   app.use(urlencoded({ limit: '12mb', extended: true }));
-  const allowedOrigins = process.env.CORS_ORIGINS?.split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
   app.enableCors({
-    origin: allowedOrigins?.length ? allowedOrigins : true,
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    optionsSuccessStatus: 204,
   });
   app.useGlobalPipes(
     new ValidationPipe({
