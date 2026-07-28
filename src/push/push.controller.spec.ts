@@ -4,6 +4,7 @@ import { PushService } from './push.service';
 import { AuthGuard } from '../features/auth.guard';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
+import { Role } from '@prisma/client';
 
 describe('PushController', () => {
   let controller: PushController;
@@ -41,7 +42,7 @@ describe('PushController', () => {
 
   it('should call registerToken on service', async () => {
     mockPushService.registerToken.mockResolvedValue(true);
-    const req = { user: { id: 'user1' } };
+    const req = { user: { id: 'user1', role: Role.USER } };
     const body = { token: 'token123', device: 'android' };
     const result = await controller.register(req, body);
     expect(pushService.registerToken).toHaveBeenCalledWith(
@@ -54,7 +55,7 @@ describe('PushController', () => {
 
   it('should call unregisterToken on service', async () => {
     mockPushService.unregisterToken.mockResolvedValue(true);
-    const req = { user: { id: 'user1' } };
+    const req = { user: { id: 'user1', role: Role.USER } };
     const body = { token: 'token123' };
     const result = await controller.unregister(req, body);
     expect(pushService.unregisterToken).toHaveBeenCalledWith(
@@ -65,7 +66,7 @@ describe('PushController', () => {
   });
 
   it('should throw an error if token is missing in register', async () => {
-    const req = { user: { id: 'user1' } };
+    const req = { user: { id: 'user1', role: Role.USER } };
     const body = { token: '' };
     expect(() => controller.register(req, body)).toThrow('Token is required');
   });

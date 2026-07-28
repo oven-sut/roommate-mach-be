@@ -4,7 +4,7 @@ import { FeaturesService } from './src/features/features.service';
 const prisma = new PrismaClient();
 
 async function test() {
-  const service = new FeaturesService(prisma as any);
+  const service = new FeaturesService(prisma as any, {} as any);
   
   const user = await prisma.user.findFirst();
   if (!user) return console.log("No users");

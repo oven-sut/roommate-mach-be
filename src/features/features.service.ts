@@ -6,14 +6,197 @@ import {
 } from '@nestjs/common';
 import { Prisma, Role, SwipeDecision } from '@prisma/client';
 import { hash } from 'bcryptjs';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { MinioService } from './minio.service';
+
+type QuestionnaireAnswerMap = Record<string, string[][]>;
+type LegacyQuestionnaireRow = {
+  id: string;
+  userId: string;
+  answers: QuestionnaireAnswerMap | null;
+  completed: boolean;
+  updatedAt: Date;
+};
+type QuestionDefinition = {
+  id: string;
+  key: string;
+  step: number;
+  title: string;
+  sub: string;
+  note?: string;
+  groups: { label: string; items: string[]; active: number[] }[];
+};
+
+const QUESTION_DEFINITIONS: QuestionDefinition[] = [
+  {
+    id: 'q1',
+    key: 'q1',
+    step: 1,
+    title: 'Sleep & wake rhythm',
+    sub: 'Tell us when you usually sleep and start your day.',
+    note: 'These habits help us match students with similar daily rhythms.',
+    groups: [
+      {
+        label: 'Usual bedtime',
+        items: ['21:00 – 22:30', '23:00 – 00:30', '01:00+'],
+        active: [],
+      },
+      {
+        label: 'Usual wake-up time',
+        items: ['06:00 – 07:00', '07:00 – 08:00', '09:00+'],
+        active: [],
+      },
+    ],
+  },
+  {
+    id: 'q2',
+    key: 'q2',
+    step: 2,
+    title: 'Cleanliness & routines',
+    sub: 'Choose the habits that matter most in a shared room.',
+    groups: [
+      {
+        label: 'Non-negotiables',
+        items: [
+          'Spotless',
+          'Dishes same day',
+          'Shoes off inside',
+          'Make the bed',
+          'Shared cleaning schedule',
+        ],
+        active: [],
+      },
+      {
+        label: 'How tidy are you?',
+        items: ['1/5', '2/5', '3/5', '4/5', '5/5'],
+        active: [2],
+      },
+    ],
+  },
+  {
+    id: 'q3',
+    key: 'q3',
+    step: 3,
+    title: 'Guests & social energy',
+    sub: 'Set expectations for visitors and shared social time.',
+    groups: [
+      {
+        label: 'Guests in the room',
+        items: ['Rarely', 'Sometimes', 'Often'],
+        active: [1],
+      },
+      {
+        label: 'Who might visit?',
+        items: ['Close friends', 'Study group', 'Family', 'Partner'],
+        active: [],
+      },
+      {
+        label: 'Social energy',
+        items: ['Quiet', 'Balanced', 'Very social'],
+        active: [1],
+      },
+    ],
+  },
+  {
+    id: 'q4',
+    key: 'q4',
+    step: 4,
+    title: 'Temperature & study setup',
+    sub: 'Help us understand how you work best in your room.',
+    groups: [
+      {
+        label: 'Preferred AC temperature',
+        items: ['22–24°', '25–26°', '27°+'],
+        active: [1],
+      },
+      {
+        label: 'Need for quiet while studying',
+        items: ['1/5', '2/5', '3/5', '4/5', '5/5'],
+        active: [2],
+      },
+      {
+        label: 'Best study location',
+        items: ['In room', 'Library', 'Cafe / outside room'],
+        active: [],
+      },
+    ],
+  },
+  {
+    id: 'q5',
+    key: 'q5',
+    step: 5,
+    title: 'Lifestyle boundaries',
+    sub: 'A few practical preferences before we finish.',
+    groups: [
+      {
+        label: 'Smoking in your living environment',
+        items: ['No', 'Okay outdoors only', 'Okay indoors'],
+        active: [0],
+      },
+      {
+        label: 'Alcohol',
+        items: ['Never', 'Socially', 'Often'],
+        active: [1],
+      },
+      {
+        label: 'Pets',
+        items: ['No pets', 'Okay with some', 'Love them'],
+        active: [1],
+      },
+    ],
+  },
+  {
+    id: 'q6',
+    key: 'q6',
+    step: 6,
+    title: 'Money & shared expectations',
+    sub: 'Last step. Align on spending and compromise.',
+    groups: [
+      {
+        label: 'How should shared costs work?',
+        items: ['Split equally', 'Pay by usage', 'Flexible / discuss'],
+        active: [0],
+      },
+      {
+        label: 'How flexible are you?',
+        items: ['Low', 'Moderate', 'High'],
+        active: [1],
+      },
+    ],
+  },
+];
 
 @Injectable()
 export class FeaturesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private minioService: MinioService,
+  ) {}
 
-  me(userId: string) {
-    return this.prisma.user.findUnique({
+  private async processPhotos(userId: string, photos: string[]): Promise<string[]> {
+    const processed: string[] = [];
+    for (let i = 0; i < photos.length; i++) {
+      const photo = photos[i];
+      if (photo && photo.startsWith('data:')) {
+        try {
+          const extension = photo.split(';')[0].split('/')[1] || 'jpeg';
+          const fileName = `profiles/${userId}/photo_${i}_${Date.now()}.${extension}`;
+          const url = await this.minioService.uploadFile(photo, fileName);
+          processed.push(url);
+        } catch (err) {
+          console.error(`Failed to upload profile photo ${i} for user ${userId}`, err);
+          processed.push(photo);
+        }
+      } else {
+        processed.push(photo);
+      }
+    }
+    return processed;
+  }
+
+  async me(userId: string) {
+    const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
@@ -24,10 +207,16 @@ export class FeaturesService {
         notificationPrefs: true,
         createdAt: true,
         profile: true,
-        answers: true,
         verification: true,
       },
     });
+
+    if (!user) return null;
+
+    return {
+      ...user,
+      answers: await this.getLegacyAnswers(userId),
+    };
   }
   updateMe(
     userId: string,
@@ -52,7 +241,8 @@ export class FeaturesService {
       },
     });
   }
-  profile(userId: string, data: Record<string, any>) {
+  async profile(userId: string, data: Record<string, any>) {
+    const photos = await this.processPhotos(userId, data.photos ?? []);
     const clean = {
       age: data.age,
       major: data.major,
@@ -64,7 +254,7 @@ export class FeaturesService {
       zone: data.zone,
       budgetMin: data.budgetMin,
       budgetMax: data.budgetMax,
-      photos: data.photos ?? [],
+      photos,
       completed: Boolean(data.completed),
     };
     return this.prisma.profile.upsert({
@@ -74,30 +264,38 @@ export class FeaturesService {
     });
   }
   getQuestionnaire() {
-    return this.prisma.question.findMany({
-      include: { groups: { orderBy: { order: 'asc' } } },
-      orderBy: { step: 'asc' },
-    });
+    return QUESTION_DEFINITIONS;
   }
   async questionnaire(
     userId: string,
     answers: Record<string, unknown>,
     completed = true,
   ) {
-    const questions = await this.prisma.question.findMany();
-    for (const q of questions) {
-      if (answers[q.key] !== undefined) {
-        await this.prisma.answer.upsert({
-          where: { userId_questionId: { userId, questionId: q.id } },
-          create: {
-            userId,
-            questionId: q.id,
-            selections: answers[q.key] as Prisma.InputJsonValue,
-          },
-          update: { selections: answers[q.key] as Prisma.InputJsonValue },
-        });
-      }
-    }
+    const normalizedAnswers = Object.fromEntries(
+      QUESTION_DEFINITIONS.map((question) => [
+        question.key,
+        Array.isArray(answers[question.key]) ? answers[question.key] : [],
+      ]),
+    ) as QuestionnaireAnswerMap;
+
+    const existing = await this.getLegacyQuestionnaire(userId);
+
+    await this.prisma.$executeRaw`
+      INSERT INTO "Questionnaire" ("id", "userId", "answers", "completed", "updatedAt")
+      VALUES (
+        ${existing?.id ?? randomUUID()},
+        ${userId},
+        CAST(${JSON.stringify(normalizedAnswers)} AS jsonb),
+        ${completed},
+        NOW()
+      )
+      ON CONFLICT ("userId")
+      DO UPDATE SET
+        "answers" = EXCLUDED."answers",
+        "completed" = EXCLUDED."completed",
+        "updatedAt" = NOW()
+    `;
+
     if (completed)
       await this.prisma.profile.updateMany({
         where: { userId },
@@ -105,11 +303,21 @@ export class FeaturesService {
       });
     return { success: true };
   }
-  verification(userId: string, documentUrl: string) {
+  async verification(userId: string, documentUrl: string) {
+    let finalUrl = documentUrl;
+    if (documentUrl && documentUrl.startsWith('data:')) {
+      try {
+        const extension = documentUrl.split(';')[0].split('/')[1] || 'jpeg';
+        const fileName = `verifications/${userId}/document_${Date.now()}.${extension}`;
+        finalUrl = await this.minioService.uploadFile(documentUrl, fileName);
+      } catch (err) {
+        console.error(`Failed to upload verification document for user ${userId}`, err);
+      }
+    }
     return this.prisma.verification.upsert({
       where: { userId },
-      create: { userId, documentUrl },
-      update: { documentUrl, status: 'PENDING' },
+      create: { userId, documentUrl: finalUrl },
+      update: { documentUrl: finalUrl, status: 'PENDING' },
     });
   }
   async discover(userId: string, page?: string) {
@@ -117,56 +325,59 @@ export class FeaturesService {
     const limit = 30;
     const offset = (pageNum - 1) * limit;
 
-    const rawUsers = await this.prisma.$queryRaw<
-      Array<{ id: string; score: number }>
-    >`
-      SELECT u.id,
-        COALESCE(
-          55 + (40.0 * 
-            SUM(CASE WHEN a1.selections = a2.selections THEN 1 ELSE 0 END) 
-            / NULLIF(COUNT(a1."questionId"), 0)
-          ), 
-        70) as score
-      FROM users u
-      LEFT JOIN "Answer" a2 ON a2."userId" = u.id
-      LEFT JOIN "Answer" a1 ON a1."questionId" = a2."questionId" AND a1."userId" = ${userId}
-      WHERE u.id != ${userId}
-        AND u.role = 'USER'
-        AND u.suspended = false
-        AND u.discoverable = true
-        AND EXISTS (SELECT 1 FROM "Profile" p WHERE p."userId" = u.id AND p.completed = true)
-        AND u.id NOT IN (
-          SELECT "blockedId" FROM "Block" WHERE "blockerId" = ${userId}
-          UNION
-          SELECT "blockerId" FROM "Block" WHERE "blockedId" = ${userId}
-          UNION
-          SELECT "toId" FROM "Swipe" WHERE "fromId" = ${userId}
-        )
-      GROUP BY u.id
-      ORDER BY score DESC, u.id ASC
-      LIMIT ${limit} OFFSET ${offset}
-    `;
+    const [blockedByMe, blockedMe, swipedIds, users, questionnaires] =
+      await Promise.all([
+        this.prisma.block.findMany({
+          where: { blockerId: userId },
+          select: { blockedId: true },
+        }),
+        this.prisma.block.findMany({
+          where: { blockedId: userId },
+          select: { blockerId: true },
+        }),
+        this.prisma.swipe.findMany({
+          where: { fromId: userId },
+          select: { toId: true },
+        }),
+        this.prisma.user.findMany({
+          where: {
+            id: { not: userId },
+            role: 'USER',
+            suspended: false,
+            discoverable: true,
+            profile: { is: { completed: true } },
+          },
+          include: { profile: true, verification: true },
+        }),
+        this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
+          SELECT "id", "userId", "answers", "completed", "updatedAt"
+          FROM "Questionnaire"
+        `,
+      ]);
 
-    if (!rawUsers.length) return [];
-
-    const userIds = rawUsers.map((r) => r.id);
-    const scoreMap = new Map(
-      rawUsers.map((r) => [r.id, Math.round(Number(r.score))]),
+    const excludedIds = new Set([
+      ...blockedByMe.map((row) => row.blockedId),
+      ...blockedMe.map((row) => row.blockerId),
+      ...swipedIds.map((row) => row.toId),
+    ]);
+    const questionnaireMap = new Map(
+      questionnaires.map((row) => [row.userId, this.toAnswerRecords(row.answers)]),
     );
-
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: userIds } },
-      include: { profile: true, answers: true, verification: true },
-    });
+    const currentUserAnswers = questionnaireMap.get(userId) ?? [];
 
     return users
+      .filter((user) => !excludedIds.has(user.id))
       .map((user) => ({
         ...user,
         passwordHash: undefined,
         googleId: undefined,
-        score: scoreMap.get(user.id) || 70,
+        score: this.score(
+          currentUserAnswers,
+          questionnaireMap.get(user.id) ?? [],
+        ),
       }))
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.score - a.score)
+      .slice(offset, offset + limit);
   }
   private score(a: unknown, b: unknown) {
     if (!a || !b) return 70;
@@ -431,5 +642,29 @@ export class FeaturesService {
       create: { key, value: value as Prisma.InputJsonValue },
       update: { value: value as Prisma.InputJsonValue },
     });
+  }
+
+  private async getLegacyQuestionnaire(userId: string) {
+    const rows = await this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
+      SELECT "id", "userId", "answers", "completed", "updatedAt"
+      FROM "Questionnaire"
+      WHERE "userId" = ${userId}
+      LIMIT 1
+    `;
+    return rows[0] ?? null;
+  }
+
+  private async getLegacyAnswers(userId: string) {
+    const questionnaire = await this.getLegacyQuestionnaire(userId);
+    return this.toAnswerRecords(questionnaire?.answers);
+  }
+
+  private toAnswerRecords(answers?: QuestionnaireAnswerMap | null) {
+    return QUESTION_DEFINITIONS.map((question) => ({
+      questionId: question.id,
+      selections: Array.isArray(answers?.[question.key])
+        ? answers?.[question.key]
+        : [],
+    }));
   }
 }

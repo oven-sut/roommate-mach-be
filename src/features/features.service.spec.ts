@@ -1,13 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FeaturesService } from './features.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { MinioService } from './minio.service';
 
 describe('FeaturesService - score calculation', () => {
   let service: FeaturesService | unknown;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [FeaturesService, { provide: PrismaService, useValue: {} }],
+      providers: [
+        FeaturesService,
+        { provide: PrismaService, useValue: {} },
+        { provide: MinioService, useValue: { uploadFile: jest.fn() } },
+      ],
     }).compile();
 
     service = module.get<FeaturesService>(FeaturesService);
