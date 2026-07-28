@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -7,6 +7,41 @@ import { GoogleLoginDto } from './dto/google-login.dto';
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get('check-email')
+  checkEmailGet(@Query('email') email: string) {
+    return this.authService.checkEmail(email);
+  }
+
+  @Post('check-email')
+  @HttpCode(HttpStatus.OK)
+  checkEmailPost(@Body() dto: { email: string }) {
+    return this.authService.checkEmail(dto.email);
+  }
+
+  @Post('send-otp')
+  @HttpCode(HttpStatus.OK)
+  sendOtp(@Body() dto: { email: string }) {
+    return this.authService.sendOtp(dto.email);
+  }
+
+  @Post('resend-otp')
+  @HttpCode(HttpStatus.OK)
+  resendOtp(@Body() dto: { email: string }) {
+    return this.authService.sendOtp(dto.email);
+  }
+
+  @Post('verify-otp')
+  @HttpCode(HttpStatus.OK)
+  verifyOtp(@Body() dto: { email: string; otp: string; code?: string }) {
+    return this.authService.verifyOtp(dto.email, dto.otp || dto.code || '');
+  }
+
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  verifyEmail(@Body() dto: { email: string; otp: string; code?: string }) {
+    return this.authService.verifyOtp(dto.email, dto.otp || dto.code || '');
+  }
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
@@ -37,3 +72,4 @@ export class AuthController {
     return this.authService.resetPassword(dto.token, dto.password);
   }
 }
+

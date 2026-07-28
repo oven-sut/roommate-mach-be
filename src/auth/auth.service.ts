@@ -64,6 +64,65 @@ export class AuthService {
     }
   }
 
+  private otpStore = new Map<string, { code: string; expiresAt: number }>();
+
+  async checkEmail(email: string) {
+    if (!email) return { exists: false, email: '' };
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() },
+      select: { id: true },
+    });
+    return { exists: Boolean(user), email: email.toLowerCase().trim() };
+  }
+
+  async sendOtp(email: string) {
+    const cleanEmail = email.toLowerCase().trim();
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+    this.otpStore.set(cleanEmail, { code, expiresAt });
+
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (resendApiKey) {
+      try {
+        await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.RESEND_FROM || 'onboarding@resend.dev',
+            to: cleanEmail,
+            subject: 'Roommate Match - Verification OTP',
+            html: `<p>Your verification code is: <strong>${code}</strong>. It will expire in 10 minutes.</p>`,
+          }),
+        });
+      } catch (err) {
+        console.error('Failed to send email via Resend API', err);
+      }
+    } else {
+      console.log(`[OTP Mock] OTP for ${cleanEmail} is ${code}`);
+    }
+
+    return {
+      success: true,
+      message: 'OTP sent successfully',
+      otp: process.env.NODE_ENV !== 'production' ? code : undefined,
+    };
+  }
+
+  async verifyOtp(email: string, code: string) {
+    const cleanEmail = email.toLowerCase().trim();
+    const stored = this.otpStore.get(cleanEmail);
+    // Allow '123456' in non-production for quick testing
+    const isValid = (stored && stored.code === code && stored.expiresAt > Date.now()) || (process.env.NODE_ENV !== 'production' && code === '123456');
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid or expired OTP code');
+    }
+    this.otpStore.delete(cleanEmail);
+    return { verified: true, email: cleanEmail };
+  }
+
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },

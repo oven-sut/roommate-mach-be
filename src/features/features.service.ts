@@ -218,6 +218,7 @@ export class FeaturesService {
       answers: await this.getLegacyAnswers(userId),
     };
   }
+
   updateMe(
     userId: string,
     data: {
@@ -241,6 +242,7 @@ export class FeaturesService {
       },
     });
   }
+
   async profile(userId: string, data: Record<string, any>) {
     const photos = await this.processPhotos(userId, data.photos ?? []);
     const clean = {
@@ -263,9 +265,11 @@ export class FeaturesService {
       update: clean,
     });
   }
+
   getQuestionnaire() {
     return QUESTION_DEFINITIONS;
   }
+
   async questionnaire(
     userId: string,
     answers: Record<string, unknown>,
@@ -303,6 +307,7 @@ export class FeaturesService {
       });
     return { success: true };
   }
+
   async verification(userId: string, documentUrl: string) {
     let finalUrl = documentUrl;
     if (documentUrl && documentUrl.startsWith('data:')) {
@@ -320,6 +325,7 @@ export class FeaturesService {
       update: { documentUrl: finalUrl, status: 'PENDING' },
     });
   }
+
   async discover(userId: string, page?: string) {
     const pageNum = Math.max(1, parseInt(page as string) || 1);
     const limit = 30;
@@ -352,7 +358,7 @@ export class FeaturesService {
         this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
           SELECT "id", "userId", "answers", "completed", "updatedAt"
           FROM "Questionnaire"
-        `,
+        `.catch(() => []),
       ]);
 
     const excludedIds = new Set([
@@ -361,7 +367,7 @@ export class FeaturesService {
       ...swipedIds.map((row) => row.toId),
     ]);
     const questionnaireMap = new Map(
-      questionnaires.map((row) => [row.userId, this.toAnswerRecords(row.answers)]),
+      questionnaires.map((row) => [row.userId, this.toAnswerRecords(row.answers)] as [string, any]),
     );
     const currentUserAnswers = questionnaireMap.get(userId) ?? [];
 
@@ -379,6 +385,7 @@ export class FeaturesService {
       .sort((a, b) => b.score - a.score)
       .slice(offset, offset + limit);
   }
+
   private score(a: unknown, b: unknown) {
     if (!a || !b) return 70;
     const aa = a as { questionId: string; selections: unknown }[],
@@ -397,6 +404,7 @@ export class FeaturesService {
     );
     return Math.round(55 + (40 * matches.length) / shared.length);
   }
+
   async swipe(fromId: string, toId: string, decision: SwipeDecision) {
     if (fromId === toId) throw new BadRequestException('Cannot swipe yourself');
     await this.prisma.swipe.upsert({
@@ -438,6 +446,7 @@ export class FeaturesService {
     });
     return { matched: true, match };
   }
+
   async matches(userId: string) {
     const matches = await this.prisma.match.findMany({
       where: {
@@ -455,6 +464,7 @@ export class FeaturesService {
       other: m.userAId === userId ? m.userB : m.userA,
     }));
   }
+
   likes(userId: string) {
     return this.prisma.swipe.findMany({
       where: {
@@ -468,6 +478,7 @@ export class FeaturesService {
       orderBy: { createdAt: 'desc' },
     });
   }
+
   async conversations(userId: string) {
     const rows = await this.prisma.conversation.findMany({
       where: { OR: [{ userAId: userId }, { userBId: userId }] },
@@ -483,6 +494,7 @@ export class FeaturesService {
       other: c.userAId === userId ? c.userB : c.userA,
     }));
   }
+
   async messages(userId: string, conversationId: string) {
     const c = await this.prisma.conversation.findFirst({
       where: {
@@ -496,6 +508,7 @@ export class FeaturesService {
       orderBy: { createdAt: 'asc' },
     });
   }
+
   async send(userId: string, conversationId: string, text: string) {
     if (!text?.trim()) throw new BadRequestException('Message is empty');
     const c = await this.prisma.conversation.findFirst({
@@ -524,6 +537,7 @@ export class FeaturesService {
     });
     return message;
   }
+
   notifications(userId: string) {
     return this.prisma.notification.findMany({
       where: { userId },
@@ -531,12 +545,14 @@ export class FeaturesService {
       take: 100,
     });
   }
+
   readNotification(userId: string, id: string) {
     return this.prisma.notification.updateMany({
       where: { id, userId },
       data: { readAt: new Date() },
     });
   }
+
   report(
     reporterId: string,
     reportedId: string,
@@ -547,6 +563,7 @@ export class FeaturesService {
       data: { reporterId, reportedId, reason, details },
     });
   }
+
   block(blockerId: string, blockedId: string) {
     return this.prisma.block.upsert({
       where: { blockerId_blockedId: { blockerId, blockedId } },
@@ -554,15 +571,82 @@ export class FeaturesService {
       update: {},
     });
   }
+
   unblock(blockerId: string, blockedId: string) {
     return this.prisma.block.deleteMany({ where: { blockerId, blockedId } });
   }
+
+  async uploadAvatar(userId: string, avatarData: string) {
+    if (!avatarData) throw new BadRequestException('Avatar data is required');
+    const extension = avatarData.includes(';')
+      ? avatarData.split(';')[0].split('/')[1] || 'jpeg'
+      : 'jpeg';
+    const fileName = `avatars/${userId}/avatar_${Date.now()}.${extension}`;
+    const url = await this.minioService.uploadFile(avatarData, fileName);
+
+    const profile = await this.prisma.profile.findUnique({ where: { userId } });
+    const currentPhotos = profile?.photos ?? [];
+    const updatedPhotos = [url, ...currentPhotos.filter((p) => p !== url)].slice(
+      0,
+      6,
+    );
+
+    await this.prisma.profile.upsert({
+      where: { userId },
+      create: { userId, photos: updatedPhotos },
+      update: { photos: updatedPhotos },
+    });
+
+    return { url, photos: updatedPhotos };
+  }
+
+  async searchUsers(currentUserId: string, query?: string) {
+    const q = query?.trim() ?? '';
+    const users = await this.prisma.user.findMany({
+      where: {
+        id: { not: currentUserId },
+        role: 'USER',
+        suspended: false,
+        ...(q
+          ? {
+              OR: [
+                { displayName: { contains: q, mode: 'insensitive' } },
+                { email: { contains: q, mode: 'insensitive' } },
+                { profile: { is: { major: { contains: q, mode: 'insensitive' } } } },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        displayName: true,
+        email: true,
+        profile: true,
+        verification: true,
+        createdAt: true,
+      },
+      take: 50,
+    });
+
+    const blocks = await this.prisma.block.findMany({
+      where: { blockerId: currentUserId },
+      select: { blockedId: true },
+    });
+    const blockedSet = new Set(blocks.map((b) => b.blockedId));
+
+    return users.map((u) => ({
+      ...u,
+      isBlocked: blockedSet.has(u.id),
+    }));
+  }
+
   async unmatch(userId: string, matchId: string) {
     return this.prisma.match.updateMany({
       where: { id: matchId, OR: [{ userAId: userId }, { userBId: userId }] },
       data: { status: 'UNMATCHED' },
     });
   }
+
   async unmatchUser(userId: string, otherId: string) {
     return this.prisma.match.updateMany({
       where: {
@@ -575,6 +659,7 @@ export class FeaturesService {
       data: { status: 'UNMATCHED' },
     });
   }
+
   async changePassword(userId: string, password: string) {
     if (password.length < 8)
       throw new BadRequestException('Password must be at least 8 characters');
@@ -584,9 +669,11 @@ export class FeaturesService {
       select: { id: true },
     });
   }
+
   ensureAdmin(user: { role: Role }) {
     if (user.role !== Role.ADMIN) throw new ForbiddenException('Admin only');
   }
+
   dashboard() {
     return Promise.all([
       this.prisma.user.count({ where: { role: 'USER' } }),
@@ -602,6 +689,7 @@ export class FeaturesService {
       reports,
     }));
   }
+
   adminUsers() {
     return this.prisma.user.findMany({
       include: {
@@ -611,6 +699,7 @@ export class FeaturesService {
       orderBy: { createdAt: 'desc' },
     });
   }
+
   suspend(id: string, suspended: boolean) {
     return this.prisma.user.update({
       where: { id },
@@ -618,12 +707,14 @@ export class FeaturesService {
       select: { id: true, suspended: true },
     });
   }
+
   verify(id: string, status: 'VERIFIED' | 'REJECTED') {
     return this.prisma.verification.update({
       where: { userId: id },
       data: { status, documentUrl: null },
     });
   }
+
   reports() {
     return this.prisma.report.findMany({
       include: {
@@ -633,9 +724,11 @@ export class FeaturesService {
       orderBy: { createdAt: 'desc' },
     });
   }
+
   config() {
     return this.prisma.appConfig.findMany();
   }
+
   setConfig(key: string, value: unknown) {
     return this.prisma.appConfig.upsert({
       where: { key },
@@ -645,13 +738,17 @@ export class FeaturesService {
   }
 
   private async getLegacyQuestionnaire(userId: string) {
-    const rows = await this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
-      SELECT "id", "userId", "answers", "completed", "updatedAt"
-      FROM "Questionnaire"
-      WHERE "userId" = ${userId}
-      LIMIT 1
-    `;
-    return rows[0] ?? null;
+    try {
+      const rows = await this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
+        SELECT "id", "userId", "answers", "completed", "updatedAt"
+        FROM "Questionnaire"
+        WHERE "userId" = ${userId}
+        LIMIT 1
+      `;
+      return rows[0] ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private async getLegacyAnswers(userId: string) {

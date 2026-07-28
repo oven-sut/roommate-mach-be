@@ -33,6 +33,39 @@ export class FeaturesController {
   ) {
     return this.f.profile(r.user.id, b);
   }
+  @Get('users/profile') getProfileAlias(@Req() r: AuthReq) {
+    return this.f.me(r.user.id);
+  }
+  @Put('users/profile') updateProfileAlias(
+    @Req() r: AuthReq,
+    @Body() b: Record<string, unknown>,
+  ) {
+    return this.f.profile(r.user.id, b);
+  }
+  @Post('users/avatar') uploadAvatar(
+    @Req() r: AuthReq,
+    @Body() b: { avatar?: string; photo?: string; file?: string },
+  ) {
+    return this.f.uploadAvatar(r.user.id, b.avatar || b.photo || b.file || '');
+  }
+  @Get('users/search') searchUsers(
+    @Req() r: AuthReq,
+    @Query('q') query?: string,
+  ) {
+    return this.f.searchUsers(r.user.id, query);
+  }
+  @Post('users/block') blockUserPost(
+    @Req() r: AuthReq,
+    @Body() b: { userId: string },
+  ) {
+    return this.f.block(r.user.id, b.userId);
+  }
+  @Post('users/unblock') unblockUserPost(
+    @Req() r: AuthReq,
+    @Body() b: { userId: string },
+  ) {
+    return this.f.unblock(r.user.id, b.userId);
+  }
   @Get('questionnaire') getQuestionnaire() {
     return this.f.getQuestionnaire();
   }
