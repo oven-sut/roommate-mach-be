@@ -1,8 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
   let app: INestApplication<App>;
@@ -21,6 +22,15 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    // Mirrors the global pipes main.ts applies in bootstrap() - without this, DTO
+    // whitelisting (and the T-01 privilege-escalation fix) never actually runs in tests.
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
     await app.init();
   }, 30000);
 
@@ -51,7 +61,32 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
   });
 
   describe('SCRUM-159 & SCRUM-165: User Registration (/auth/register)', () => {
-    it('should register first user successfully', async () => {
+    it('should reject registration when email has not completed OTP verification', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({
+          displayName: 'Unverified Student',
+          email: testEmail1,
+          password: 'Password123!',
+        })
+        .expect(401);
+    });
+
+    async function verifyEmailWithOtp(email: string) {
+      await request(app.getHttpServer())
+        .post('/auth/send-otp')
+        .send({ email })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-otp')
+        .send({ email, otp: '123456' })
+        .expect(200);
+    }
+
+    it('should register first user successfully after OTP verification', async () => {
+      await verifyEmailWithOtp(testEmail1);
+
       const res = await request(app.getHttpServer())
         .post('/auth/register')
         .send({
@@ -69,7 +104,9 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
       userId = res.body.user.id;
     });
 
-    it('should register second user successfully', async () => {
+    it('should register second user successfully after OTP verification', async () => {
+      await verifyEmailWithOtp(testEmail2);
+
       const res = await request(app.getHttpServer())
         .post('/auth/register')
         .send({
@@ -197,6 +234,21 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
       expect(res.body.email).toBe(testEmail1);
     });
 
+    it('PATCH /api/me should reject unknown fields like role (privilege escalation regression)', async () => {
+      await request(app.getHttpServer())
+        .patch('/api/me')
+        .set('Authorization', `Bearer ${userToken}`)
+        .send({ role: 'ADMIN' })
+        .expect(400);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/me')
+        .set('Authorization', `Bearer ${userToken}`)
+        .expect(200);
+
+      expect(res.body.role).toBe('USER');
+    });
+
     it('PUT /api/profile should update user profile', async () => {
       const res = await request(app.getHttpServer())
         .put('/api/profile')
@@ -282,6 +334,214 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
         .set('Authorization', `Bearer ${userToken}`)
         .send({ userId: secondUserId })
         .expect(201);
+    });
+  });
+
+  describe('SCRUM-170: Permanent account deletion cascades every related table', () => {
+    const testEmail3 = `scrum_test_3_${Date.now()}@g.sut.ac.th`;
+    let thirdUserToken: string;
+    let thirdUserId: string;
+    let prisma: PrismaService;
+
+    it('creates a user with related rows in every child table', async () => {
+      prisma = app.get(PrismaService);
+
+      await request(app.getHttpServer())
+        .post('/auth/send-otp')
+        .send({ email: testEmail3 })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post('/auth/verify-otp')
+        .send({ email: testEmail3, otp: '123456' })
+        .expect(200);
+      const registerRes = await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({
+          displayName: 'Cascade Test User',
+          email: testEmail3,
+          password: 'Password123!',
+        })
+        .expect(201);
+      thirdUserToken = registerRes.body.access_token;
+      thirdUserId = registerRes.body.user.id;
+
+      await request(app.getHttpServer())
+        .put('/api/profile')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({
+          age: 21,
+          major: 'Computer Science',
+          gender: 'Male',
+          bio: 'cascade delete test',
+          year: 1,
+          roomType: 'Single',
+          roommateGender: 'Male',
+          zone: 'Gate 2',
+          budgetMin: 2000,
+          budgetMax: 4000,
+          completed: true,
+        })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .put('/api/questionnaire')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ answers: { q1: [[0], [1]] }, completed: true })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/api/verification')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ documentUrl: 'https://example.com/fake-document.png' })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/auth/forgot-password')
+        .send({ email: testEmail3 })
+        .expect(200);
+
+      // Mutual LIKE creates a Swipe from both sides + Match + Conversation + Notification
+      await request(app.getHttpServer())
+        .post(`/api/swipes/${secondUserId}`)
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ decision: 'LIKE' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/swipes/${thirdUserId}`)
+        .set('Authorization', `Bearer ${secondUserToken}`)
+        .send({ decision: 'LIKE' })
+        .expect(201);
+
+      const conversationsRes = await request(app.getHttpServer())
+        .get('/api/conversations')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .expect(200);
+      const conversationId = conversationsRes.body[0].id;
+
+      await request(app.getHttpServer())
+        .post(`/api/conversations/${conversationId}/messages`)
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ text: 'hello from cascade delete test' })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/api/reports/${secondUserId}`)
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ reason: 'test report for cascade delete' })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post(`/api/blocks/${secondUserId}`)
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .expect(201);
+
+      expect(
+        await prisma.profile.findUnique({ where: { userId: thirdUserId } }),
+      ).not.toBeNull();
+      expect(
+        await prisma.answer.count({ where: { userId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.verification.findUnique({
+          where: { userId: thirdUserId },
+        }),
+      ).not.toBeNull();
+      expect(
+        await prisma.passwordReset.count({ where: { userId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.swipe.count({
+          where: { OR: [{ fromId: thirdUserId }, { toId: thirdUserId }] },
+        }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.match.count({
+          where: { OR: [{ userAId: thirdUserId }, { userBId: thirdUserId }] },
+        }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.conversation.count({
+          where: { OR: [{ userAId: thirdUserId }, { userBId: thirdUserId }] },
+        }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.message.count({ where: { senderId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.notification.count({ where: { userId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.report.count({ where: { reporterId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+      expect(
+        await prisma.block.count({ where: { blockerId: thirdUserId } }),
+      ).toBeGreaterThan(0);
+    });
+
+    it('DELETE /api/me removes the user and cascades to every related row', async () => {
+      await request(app.getHttpServer())
+        .delete('/api/me')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .send({ password: 'Password123!' })
+        .expect(200);
+
+      expect(
+        await prisma.user.findUnique({ where: { id: thirdUserId } }),
+      ).toBeNull();
+      expect(
+        await prisma.profile.findUnique({ where: { userId: thirdUserId } }),
+      ).toBeNull();
+      expect(
+        await prisma.answer.count({ where: { userId: thirdUserId } }),
+      ).toBe(0);
+      expect(
+        await prisma.verification.findUnique({
+          where: { userId: thirdUserId },
+        }),
+      ).toBeNull();
+      expect(
+        await prisma.passwordReset.count({ where: { userId: thirdUserId } }),
+      ).toBe(0);
+      expect(
+        await prisma.swipe.count({
+          where: { OR: [{ fromId: thirdUserId }, { toId: thirdUserId }] },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.match.count({
+          where: { OR: [{ userAId: thirdUserId }, { userBId: thirdUserId }] },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.conversation.count({
+          where: { OR: [{ userAId: thirdUserId }, { userBId: thirdUserId }] },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.message.count({ where: { senderId: thirdUserId } }),
+      ).toBe(0);
+      expect(
+        await prisma.notification.count({ where: { userId: thirdUserId } }),
+      ).toBe(0);
+      expect(
+        await prisma.report.count({ where: { reporterId: thirdUserId } }),
+      ).toBe(0);
+      expect(
+        await prisma.block.count({ where: { blockerId: thirdUserId } }),
+      ).toBe(0);
+
+      await request(app.getHttpServer())
+        .get('/api/me')
+        .set('Authorization', `Bearer ${thirdUserToken}`)
+        .expect(401);
+    });
+
+    it('DELETE /api/me should reject an incorrect password', async () => {
+      await request(app.getHttpServer())
+        .delete('/api/me')
+        .set('Authorization', `Bearer ${secondUserToken}`)
+        .send({ password: 'WrongPassword!' })
+        .expect(401);
     });
   });
 });

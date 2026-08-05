@@ -14,6 +14,7 @@ import {
 import { Role, SwipeDecision } from '@prisma/client';
 import { AuthGuard } from './auth.guard';
 import { FeaturesService } from './features.service';
+import { UpdateMeDto } from './dto/update-me.dto';
 
 export type AuthReq = { user: { id: string; role: Role } };
 
@@ -24,8 +25,11 @@ export class FeaturesController {
   @Get('me') me(@Req() r: AuthReq) {
     return this.f.me(r.user.id);
   }
-  @Patch('me') updateMe(@Req() r: AuthReq, @Body() b: Record<string, unknown>) {
+  @Patch('me') updateMe(@Req() r: AuthReq, @Body() b: UpdateMeDto) {
     return this.f.updateMe(r.user.id, b);
+  }
+  @Delete('me') deleteMe(@Req() r: AuthReq, @Body() b: { password?: string }) {
+    return this.f.deleteMe(r.user.id, b.password || '');
   }
   @Put('profile') profile(
     @Req() r: AuthReq,
@@ -136,6 +140,9 @@ export class FeaturesController {
     @Body() b: { reason: string; details?: string },
   ) {
     return this.f.report(r.user.id, id, b.reason, b.details);
+  }
+  @Get('blocks') getBlocks(@Req() r: AuthReq) {
+    return this.f.getBlockedUsers(r.user.id);
   }
   @Post('blocks/:userId') block(
     @Req() r: AuthReq,

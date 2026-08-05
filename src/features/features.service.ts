@@ -3,21 +3,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { Prisma, Role, SwipeDecision } from '@prisma/client';
-import { hash } from 'bcryptjs';
-import { randomUUID } from 'crypto';
+import { compare, hash } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { MinioService } from './minio.service';
 
-type QuestionnaireAnswerMap = Record<string, string[][]>;
-type LegacyQuestionnaireRow = {
-  id: string;
-  userId: string;
-  answers: QuestionnaireAnswerMap | null;
-  completed: boolean;
-  updatedAt: Date;
-};
 type QuestionDefinition = {
   id: string;
   key: string;
@@ -215,7 +208,7 @@ export class FeaturesService {
 
     return {
       ...user,
-      answers: await this.getLegacyAnswers(userId),
+      answers: await this.getAnswers(userId),
     };
   }
 
@@ -227,12 +220,15 @@ export class FeaturesService {
       notificationPrefs?: Record<string, boolean>;
     },
   ) {
+    const update: Prisma.UserUpdateInput = {};
+    if (data.displayName !== undefined) update.displayName = data.displayName;
+    if (data.discoverable !== undefined) update.discoverable = data.discoverable;
+    if (data.notificationPrefs !== undefined)
+      update.notificationPrefs = data.notificationPrefs as Prisma.InputJsonValue;
+
     return this.prisma.user.update({
       where: { id: userId },
-      data: {
-        ...data,
-        notificationPrefs: data.notificationPrefs as Prisma.InputJsonValue,
-      },
+      data: update,
       select: {
         id: true,
         displayName: true,
@@ -275,30 +271,27 @@ export class FeaturesService {
     answers: Record<string, unknown>,
     completed = true,
   ) {
-    const normalizedAnswers = Object.fromEntries(
-      QUESTION_DEFINITIONS.map((question) => [
-        question.key,
-        Array.isArray(answers[question.key]) ? answers[question.key] : [],
-      ]),
-    ) as QuestionnaireAnswerMap;
+    await this.ensureQuestionsSeeded();
 
-    const existing = await this.getLegacyQuestionnaire(userId);
-
-    await this.prisma.$executeRaw`
-      INSERT INTO "Questionnaire" ("id", "userId", "answers", "completed", "updatedAt")
-      VALUES (
-        ${existing?.id ?? randomUUID()},
-        ${userId},
-        CAST(${JSON.stringify(normalizedAnswers)} AS jsonb),
-        ${completed},
-        NOW()
-      )
-      ON CONFLICT ("userId")
-      DO UPDATE SET
-        "answers" = EXCLUDED."answers",
-        "completed" = EXCLUDED."completed",
-        "updatedAt" = NOW()
-    `;
+    await this.prisma.$transaction(
+      QUESTION_DEFINITIONS.map((question) =>
+        this.prisma.answer.upsert({
+          where: { userId_questionId: { userId, questionId: question.id } },
+          create: {
+            userId,
+            questionId: question.id,
+            selections: (Array.isArray(answers[question.key])
+              ? answers[question.key]
+              : []) as Prisma.InputJsonValue,
+          },
+          update: {
+            selections: (Array.isArray(answers[question.key])
+              ? answers[question.key]
+              : []) as Prisma.InputJsonValue,
+          },
+        }),
+      ),
+    );
 
     if (completed)
       await this.prisma.profile.updateMany({
@@ -331,7 +324,7 @@ export class FeaturesService {
     const limit = 30;
     const offset = (pageNum - 1) * limit;
 
-    const [blockedByMe, blockedMe, swipedIds, users, questionnaires] =
+    const [blockedByMe, blockedMe, swipedIds, users, answerRows] =
       await Promise.all([
         this.prisma.block.findMany({
           where: { blockerId: userId },
@@ -355,10 +348,9 @@ export class FeaturesService {
           },
           include: { profile: true, verification: true },
         }),
-        this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
-          SELECT "id", "userId", "answers", "completed", "updatedAt"
-          FROM "Questionnaire"
-        `.catch(() => []),
+        this.prisma.answer.findMany({
+          select: { userId: true, questionId: true, selections: true },
+        }),
       ]);
 
     const excludedIds = new Set([
@@ -366,9 +358,15 @@ export class FeaturesService {
       ...blockedMe.map((row) => row.blockerId),
       ...swipedIds.map((row) => row.toId),
     ]);
-    const questionnaireMap = new Map(
-      questionnaires.map((row) => [row.userId, this.toAnswerRecords(row.answers)] as [string, any]),
-    );
+    const questionnaireMap = new Map<
+      string,
+      { questionId: string; selections: unknown }[]
+    >();
+    for (const row of answerRows) {
+      const entries = questionnaireMap.get(row.userId) ?? [];
+      entries.push({ questionId: row.questionId, selections: row.selections });
+      questionnaireMap.set(row.userId, entries);
+    }
     const currentUserAnswers = questionnaireMap.get(userId) ?? [];
 
     return users
@@ -576,13 +574,39 @@ export class FeaturesService {
     return this.prisma.block.deleteMany({ where: { blockerId, blockedId } });
   }
 
+  async getBlockedUsers(userId: string) {
+    const blocks = await this.prisma.block.findMany({
+      where: { blockerId: userId },
+      include: {
+        blocked: {
+          select: { id: true, displayName: true, email: true, profile: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return blocks.map((b) => ({ ...b.blocked, blockedAt: b.createdAt }));
+  }
+
   async uploadAvatar(userId: string, avatarData: string) {
     if (!avatarData) throw new BadRequestException('Avatar data is required');
+    if (!/^data:image\/(jpeg|jpg|png|webp|gif);base64,/.test(avatarData)) {
+      throw new BadRequestException(
+        'Avatar must be a base64 image (jpeg, png, webp or gif)',
+      );
+    }
     const extension = avatarData.includes(';')
       ? avatarData.split(';')[0].split('/')[1] || 'jpeg'
       : 'jpeg';
     const fileName = `avatars/${userId}/avatar_${Date.now()}.${extension}`;
-    const url = await this.minioService.uploadFile(avatarData, fileName);
+    let url: string;
+    try {
+      url = await this.minioService.uploadFile(avatarData, fileName);
+    } catch (err) {
+      console.error(`Failed to upload avatar for user ${userId}`, err);
+      throw new ServiceUnavailableException(
+        'Avatar storage is temporarily unavailable. Please try again later.',
+      );
+    }
 
     const profile = await this.prisma.profile.findUnique({ where: { userId } });
     const currentPhotos = profile?.photos ?? [];
@@ -670,6 +694,20 @@ export class FeaturesService {
     });
   }
 
+  async deleteMe(userId: string, password: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.passwordHash) {
+      if (!password || !(await compare(password, user.passwordHash)))
+        throw new UnauthorizedException('Incorrect password');
+    }
+    await this.prisma.user.delete({ where: { id: userId } });
+    return { success: true };
+  }
+
   ensureAdmin(user: { role: Role }) {
     if (user.role !== Role.ADMIN) throw new ForbiddenException('Admin only');
   }
@@ -737,31 +775,54 @@ export class FeaturesService {
     });
   }
 
-  private async getLegacyQuestionnaire(userId: string) {
-    try {
-      const rows = await this.prisma.$queryRaw<LegacyQuestionnaireRow[]>`
-        SELECT "id", "userId", "answers", "completed", "updatedAt"
-        FROM "Questionnaire"
-        WHERE "userId" = ${userId}
-        LIMIT 1
-      `;
-      return rows[0] ?? null;
-    } catch {
-      return null;
-    }
+  private questionsSeeded = false;
+
+  private async ensureQuestionsSeeded() {
+    if (this.questionsSeeded) return;
+    await this.prisma.$transaction(
+      QUESTION_DEFINITIONS.map((question) =>
+        this.prisma.question.upsert({
+          where: { id: question.id },
+          create: {
+            id: question.id,
+            key: question.key,
+            step: question.step,
+            title: question.title,
+            sub: question.sub,
+            note: question.note,
+            groups: {
+              create: question.groups.map((group, order) => ({
+                label: group.label,
+                items: group.items,
+                active: group.active,
+                order,
+              })),
+            },
+          },
+          update: {
+            key: question.key,
+            step: question.step,
+            title: question.title,
+            sub: question.sub,
+            note: question.note,
+          },
+        }),
+      ),
+    );
+    this.questionsSeeded = true;
   }
 
-  private async getLegacyAnswers(userId: string) {
-    const questionnaire = await this.getLegacyQuestionnaire(userId);
-    return this.toAnswerRecords(questionnaire?.answers);
-  }
-
-  private toAnswerRecords(answers?: QuestionnaireAnswerMap | null) {
+  private async getAnswers(userId: string) {
+    const rows = await this.prisma.answer.findMany({
+      where: { userId },
+      select: { questionId: true, selections: true },
+    });
+    const byQuestionId = new Map(
+      rows.map((row) => [row.questionId, row.selections]),
+    );
     return QUESTION_DEFINITIONS.map((question) => ({
       questionId: question.id,
-      selections: Array.isArray(answers?.[question.key])
-        ? answers?.[question.key]
-        : [],
+      selections: byQuestionId.get(question.id) ?? [],
     }));
   }
 }

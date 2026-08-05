@@ -32,6 +32,12 @@ export class AuthService {
       throw new ConflictException('This email is already registered');
     }
 
+    if (!this.isEmailVerified(dto.email)) {
+      throw new UnauthorizedException(
+        'Email not verified. Please verify your email with the OTP sent to it first.',
+      );
+    }
+
     try {
       const user = await this.prisma.user.create({
         data: {
@@ -52,6 +58,7 @@ export class AuthService {
         },
       });
 
+      this.verifiedEmails.delete(dto.email.toLowerCase().trim());
       return this.buildAuthResponse(user);
     } catch (error) {
       if (
@@ -65,6 +72,19 @@ export class AuthService {
   }
 
   private otpStore = new Map<string, { code: string; expiresAt: number }>();
+  private verifiedEmails = new Map<string, number>();
+  private readonly allowDevOtp = process.env.ALLOW_DEV_OTP === 'true';
+
+  private isEmailVerified(email: string): boolean {
+    const cleanEmail = email.toLowerCase().trim();
+    const expiresAt = this.verifiedEmails.get(cleanEmail);
+    if (!expiresAt) return false;
+    if (expiresAt < Date.now()) {
+      this.verifiedEmails.delete(cleanEmail);
+      return false;
+    }
+    return true;
+  }
 
   async checkEmail(email: string) {
     if (!email) return { exists: false, email: '' };
@@ -107,19 +127,21 @@ export class AuthService {
     return {
       success: true,
       message: 'OTP sent successfully',
-      otp: process.env.NODE_ENV !== 'production' ? code : undefined,
+      otp: this.allowDevOtp ? code : undefined,
     };
   }
 
   async verifyOtp(email: string, code: string) {
     const cleanEmail = email.toLowerCase().trim();
     const stored = this.otpStore.get(cleanEmail);
-    // Allow '123456' in non-production for quick testing
-    const isValid = (stored && stored.code === code && stored.expiresAt > Date.now()) || (process.env.NODE_ENV !== 'production' && code === '123456');
+    const isValid =
+      (stored && stored.code === code && stored.expiresAt > Date.now()) ||
+      (this.allowDevOtp && code === '123456');
     if (!isValid) {
       throw new UnauthorizedException('Invalid or expired OTP code');
     }
     this.otpStore.delete(cleanEmail);
+    this.verifiedEmails.set(cleanEmail, Date.now() + 30 * 60 * 1000);
     return { verified: true, email: cleanEmail };
   }
 
@@ -168,9 +190,7 @@ export class AuthService {
         expiresAt: new Date(Date.now() + 15 * 60_000),
       },
     });
-    return process.env.NODE_ENV === 'production'
-      ? { ok: true }
-      : { ok: true, resetToken: token };
+    return this.allowDevOtp ? { ok: true, resetToken: token } : { ok: true };
   }
 
   async resetPassword(token: string, password: string) {
@@ -192,6 +212,26 @@ export class AuthService {
         data: { usedAt: new Date() },
       }),
     ]);
+    return { ok: true };
+  }
+
+  async resetPasswordWithOtp(email: string, password: string) {
+    const cleanEmail = email.toLowerCase().trim();
+    if (!this.isEmailVerified(cleanEmail))
+      throw new UnauthorizedException(
+        'Please verify the OTP sent to your email first',
+      );
+    if (password.length < 8)
+      throw new UnauthorizedException('Password must be at least 8 characters');
+    const user = await this.prisma.user.findUnique({
+      where: { email: cleanEmail },
+    });
+    if (!user) throw new UnauthorizedException('Invalid or expired OTP code');
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: await hash(password, 12) },
+    });
+    this.verifiedEmails.delete(cleanEmail);
     return { ok: true };
   }
 

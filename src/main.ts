@@ -5,6 +5,9 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 
 async function bootstrap() {
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEV_OTP === 'true') {
+    throw new Error('ALLOW_DEV_OTP must not be true when NODE_ENV=production');
+  }
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
