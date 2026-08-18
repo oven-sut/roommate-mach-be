@@ -1,16 +1,19 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
-import { OAuth2Client } from 'google-auth-library';
+import { OAuth2Client, type TokenPayload } from 'google-auth-library';
 import { PrismaService } from '../prisma/prisma.service';
+import { AppSettingsService } from '../config/app-settings.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { GoogleLoginDto } from './dto/google-login.dto';
+import { OtpService } from './otp.service';
 import { randomBytes, createHash } from 'crypto';
 
 @Injectable()
@@ -20,9 +23,21 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly otp: OtpService,
+    private readonly settings: AppSettingsService,
   ) {}
 
+  /** Rejects addresses outside the domains an admin has allowed. */
+  private async assertDomainAllowed(email: string) {
+    if (await this.settings.isEmailDomainAllowed(email)) return;
+    const domains = await this.settings.allowedEmailDomains();
+    const list = domains.map((domain) => '@' + domain).join(' or ');
+    throw new ForbiddenException(`Only ${list} accounts can be used`);
+  }
+
   async register(dto: RegisterDto) {
+    await this.assertDomainAllowed(dto.email);
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
       select: { id: true },
@@ -32,10 +47,20 @@ export class AuthService {
       throw new ConflictException('This email is already registered');
     }
 
-    if (!this.isEmailVerified(dto.email)) {
+    if (!(await this.otp.isVerified(dto.email))) {
       throw new UnauthorizedException(
         'Email not verified. Please verify your email with the OTP sent to it first.',
       );
+    }
+
+    if (dto.sutId) {
+      const takenId = await this.prisma.user.findUnique({
+        where: { sutId: dto.sutId },
+        select: { id: true },
+      });
+      if (takenId) {
+        throw new ConflictException('This student ID is already registered');
+      }
     }
 
     try {
@@ -43,6 +68,7 @@ export class AuthService {
         data: {
           displayName: dto.displayName,
           email: dto.email,
+          sutId: dto.sutId ?? null,
           passwordHash: await hash(dto.password, 12),
           role:
             dto.email.toLowerCase() === process.env.ADMIN_EMAIL?.toLowerCase()
@@ -53,96 +79,63 @@ export class AuthService {
           id: true,
           displayName: true,
           email: true,
+          sutId: true,
           role: true,
           createdAt: true,
         },
       });
 
-      this.verifiedEmails.delete(dto.email.toLowerCase().trim());
+      await this.otp.consumeVerification(dto.email);
       return this.buildAuthResponse(user);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException('This email is already registered');
+        const target = String(
+          (error.meta as { target?: string | string[] })?.target ?? '',
+        );
+        throw new ConflictException(
+          target.includes('sutId')
+            ? 'This student ID is already registered'
+            : 'This email is already registered',
+        );
       }
       throw error;
     }
   }
 
-  private otpStore = new Map<string, { code: string; expiresAt: number }>();
-  private verifiedEmails = new Map<string, number>();
-  private readonly allowDevOtp = process.env.ALLOW_DEV_OTP === 'true';
-
-  private isEmailVerified(email: string): boolean {
-    const cleanEmail = email.toLowerCase().trim();
-    const expiresAt = this.verifiedEmails.get(cleanEmail);
-    if (!expiresAt) return false;
-    if (expiresAt < Date.now()) {
-      this.verifiedEmails.delete(cleanEmail);
-      return false;
-    }
-    return true;
-  }
-
   async checkEmail(email: string) {
-    if (!email) return { exists: false, email: '' };
+    if (!email) return { exists: false, email: '', allowedDomain: false };
+    const cleanEmail = email.toLowerCase().trim();
     const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+      where: { email: cleanEmail },
       select: { id: true },
     });
-    return { exists: Boolean(user), email: email.toLowerCase().trim() };
+    return {
+      exists: Boolean(user),
+      email: cleanEmail,
+      allowedDomain: await this.settings.isEmailDomainAllowed(cleanEmail),
+    };
   }
 
   async sendOtp(email: string) {
-    const cleanEmail = email.toLowerCase().trim();
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-    this.otpStore.set(cleanEmail, { code, expiresAt });
+    const cleanEmail = (email ?? '').trim().toLowerCase();
+    if (!cleanEmail) throw new UnauthorizedException('Email is required');
+    await this.assertDomainAllowed(cleanEmail);
 
-    const resendApiKey = process.env.RESEND_API_KEY;
-    if (resendApiKey) {
-      try {
-        await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${resendApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM || 'onboarding@resend.dev',
-            to: cleanEmail,
-            subject: 'Roommate Match - Verification OTP',
-            html: `<p>Your verification code is: <strong>${code}</strong>. It will expire in 10 minutes.</p>`,
-          }),
-        });
-      } catch (err) {
-        console.error('Failed to send email via Resend API', err);
-      }
-    } else {
-      console.log(`[OTP Mock] OTP for ${cleanEmail} is ${code}`);
-    }
+    const code = await this.otp.issue(cleanEmail);
+    await this.otp.deliver(cleanEmail, code);
 
     return {
       success: true,
       message: 'OTP sent successfully',
-      otp: this.allowDevOtp ? code : undefined,
+      otp: this.otp.echo(code),
     };
   }
 
-  async verifyOtp(email: string, code: string) {
-    const cleanEmail = email.toLowerCase().trim();
-    const stored = this.otpStore.get(cleanEmail);
-    const isValid =
-      (stored && stored.code === code && stored.expiresAt > Date.now()) ||
-      (this.allowDevOtp && code === '123456');
-    if (!isValid) {
-      throw new UnauthorizedException('Invalid or expired OTP code');
-    }
-    this.otpStore.delete(cleanEmail);
-    this.verifiedEmails.set(cleanEmail, Date.now() + 30 * 60 * 1000);
-    return { verified: true, email: cleanEmail };
+  verifyOtp(email: string, code: string) {
+    return this.otp.verify(email, code);
   }
 
   async login(dto: LoginDto) {
@@ -178,8 +171,9 @@ export class AuthService {
 
   async forgotPassword(email: string) {
     const user = await this.prisma.user.findUnique({
-      where: { email: email.toLowerCase() },
+      where: { email: email.toLowerCase().trim() },
     });
+    // Always the same answer, so this cannot be used to discover accounts.
     if (!user) return { ok: true };
     const token = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -190,7 +184,9 @@ export class AuthService {
         expiresAt: new Date(Date.now() + 15 * 60_000),
       },
     });
-    return this.allowDevOtp ? { ok: true, resetToken: token } : { ok: true };
+    return process.env.ALLOW_DEV_OTP === 'true'
+      ? { ok: true, resetToken: token }
+      : { ok: true };
   }
 
   async resetPassword(token: string, password: string) {
@@ -215,9 +211,10 @@ export class AuthService {
     return { ok: true };
   }
 
+  /** Reset path the app uses: send-otp then verify-otp then this. */
   async resetPasswordWithOtp(email: string, password: string) {
     const cleanEmail = email.toLowerCase().trim();
-    if (!this.isEmailVerified(cleanEmail))
+    if (!(await this.otp.isVerified(cleanEmail)))
       throw new UnauthorizedException(
         'Please verify the OTP sent to your email first',
       );
@@ -231,7 +228,7 @@ export class AuthService {
       where: { id: user.id },
       data: { passwordHash: await hash(password, 12) },
     });
-    this.verifiedEmails.delete(cleanEmail);
+    await this.otp.consumeVerification(cleanEmail);
     return { ok: true };
   }
 
@@ -244,7 +241,7 @@ export class AuthService {
       throw new UnauthorizedException('Google Sign-In is not configured');
     }
 
-    let payload;
+    let payload: TokenPayload | undefined;
     try {
       const ticket = await this.googleClient.verifyIdToken({
         idToken: dto.idToken,
@@ -260,9 +257,7 @@ export class AuthService {
     }
 
     const email = payload.email.toLowerCase();
-    if (!email.endsWith('@g.sut.ac.th')) {
-      throw new UnauthorizedException('Only SUT student accounts are allowed');
-    }
+    await this.assertDomainAllowed(email);
 
     const existingByGoogleId = await this.prisma.user.findFirst({
       where: { googleId: payload.sub },
@@ -283,8 +278,15 @@ export class AuthService {
               googleId: payload.sub,
               email,
               displayName: payload.name?.trim() || email.split('@')[0],
+              role:
+                email === process.env.ADMIN_EMAIL?.toLowerCase()
+                  ? 'ADMIN'
+                  : 'USER',
             },
           });
+
+    if (user.suspended)
+      throw new UnauthorizedException('This account is suspended');
 
     return this.buildAuthResponse({
       id: user.id,

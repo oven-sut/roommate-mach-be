@@ -16,11 +16,27 @@ describe('AppController (e2e)', () => {
     await app.init();
   });
 
-  it('/ (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
+  it('/ (GET) names the service and points at the docs', () => {
+    return request(app.getHttpServer()).get('/').expect(200).expect({
+      name: 'Roommate Match API',
+      status: 'ok',
+      docs: '/api/docs',
+      health: '/health',
+    });
+  });
+
+  it('/health (GET) reports the process is alive', async () => {
+    const res = await request(app.getHttpServer()).get('/health').expect(200);
+    expect(res.body.status).toBe('ok');
+    expect(typeof res.body.uptime).toBe('number');
+  });
+
+  it('/health/ready (GET) checks the database and object storage', async () => {
+    const res = await request(app.getHttpServer()).get('/health/ready');
+
+    expect([200, 503]).toContain(res.status);
+    expect(res.body.checks).toHaveProperty('database');
+    expect(res.body.checks).toHaveProperty('storage');
   });
 
   afterEach(async () => {

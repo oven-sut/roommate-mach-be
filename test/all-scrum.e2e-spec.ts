@@ -15,6 +15,8 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
 
   const testEmail1 = `scrum_test_${Date.now()}@g.sut.ac.th`;
   const testEmail2 = `scrum_test_2_${Date.now()}@g.sut.ac.th`;
+  /** Everything this suite creates, so afterAll can clean up after itself. */
+  const createdEmails: string[] = [testEmail1, testEmail2];
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -34,8 +36,20 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
     await app.init();
   }, 30000);
 
+  /**
+   * The suite creates real rows, so it removes them again. Without this every
+   * run leaves orphaned students behind and later runs get slower and noisier.
+   * Deleting the user cascades to profile, answers, swipes, matches and chat.
+   */
   afterAll(async () => {
     if (app) {
+      const prisma = app.get(PrismaService);
+      await prisma.user
+        .deleteMany({ where: { email: { in: createdEmails } } })
+        .catch(() => undefined);
+      await prisma.emailOtp
+        .deleteMany({ where: { email: { in: createdEmails } } })
+        .catch(() => undefined);
       await app.close();
     }
   });
@@ -47,7 +61,20 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
         .query({ email: testEmail1 })
         .expect(200);
 
-      expect(res.body).toEqual({ exists: false, email: testEmail1 });
+      expect(res.body).toEqual({
+        exists: false,
+        email: testEmail1,
+        allowedDomain: true,
+      });
+    });
+
+    it('GET /auth/check-email should flag an address outside the SUT domains', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/auth/check-email')
+        .query({ email: 'someone@gmail.com' })
+        .expect(200);
+
+      expect(res.body.allowedDomain).toBe(false);
     });
 
     it('POST /auth/check-email should report false for non-existent email', async () => {
@@ -56,7 +83,11 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
         .send({ email: testEmail1 })
         .expect(200);
 
-      expect(res.body).toEqual({ exists: false, email: testEmail1 });
+      expect(res.body).toEqual({
+        exists: false,
+        email: testEmail1,
+        allowedDomain: true,
+      });
     });
   });
 
@@ -102,6 +133,7 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
 
       userToken = res.body.access_token;
       userId = res.body.user.id;
+      expect(userId).toEqual(expect.any(String));
     });
 
     it('should register second user successfully after OTP verification', async () => {
@@ -167,19 +199,43 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
   });
 
   describe('SCRUM-152, SCRUM-158, SCRUM-167: OTP Generation & Verification', () => {
+    const otpEmail = `scrum_otp_${Date.now()}@g.sut.ac.th`;
+    createdEmails.push(otpEmail);
+
     it('POST /auth/send-otp should send OTP', async () => {
       const res = await request(app.getHttpServer())
         .post('/auth/send-otp')
-        .send({ email: testEmail1 })
+        .send({ email: otpEmail })
         .expect(200);
 
       expect(res.body).toHaveProperty('success', true);
     });
 
+    it('POST /auth/send-otp should refuse an immediate resend to the same address', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/send-otp')
+        .send({ email: otpEmail })
+        .expect(400);
+    });
+
+    it('POST /auth/send-otp should refuse an address outside the SUT domains', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/send-otp')
+        .send({ email: `outsider_${Date.now()}@gmail.com` })
+        .expect(403);
+    });
+
+    it('POST /auth/verify-otp should reject a wrong code', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/verify-otp')
+        .send({ email: otpEmail, otp: '000000' })
+        .expect(401);
+    });
+
     it('POST /auth/verify-otp should verify OTP with test code 123456', async () => {
       const res = await request(app.getHttpServer())
         .post('/auth/verify-otp')
-        .send({ email: testEmail1, otp: '123456' })
+        .send({ email: otpEmail, otp: '123456' })
         .expect(200);
 
       expect(res.body).toHaveProperty('verified', true);
@@ -188,7 +244,7 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
     it('POST /auth/verify-email should verify email with test code 123456', async () => {
       const res = await request(app.getHttpServer())
         .post('/auth/verify-email')
-        .send({ email: testEmail1, code: '123456' })
+        .send({ email: otpEmail, code: '123456' })
         .expect(200);
 
       expect(res.body).toHaveProperty('verified', true);
@@ -284,7 +340,8 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
 
   describe('SCRUM-153 & SCRUM-157: Avatar Upload to MinIO (/api/users/avatar)', () => {
     it('POST /api/users/avatar should upload base64 avatar image', async () => {
-      const sampleBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const sampleBase64 =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
       const res = await request(app.getHttpServer())
         .post('/api/users/avatar')
         .set('Authorization', `Bearer ${userToken}`)
@@ -339,6 +396,7 @@ describe('Roommate Match - Complete SCRUM-152 to SCRUM-173 E2E Suite', () => {
 
   describe('SCRUM-170: Permanent account deletion cascades every related table', () => {
     const testEmail3 = `scrum_test_3_${Date.now()}@g.sut.ac.th`;
+    createdEmails.push(testEmail3);
     let thirdUserToken: string;
     let thirdUserId: string;
     let prisma: PrismaService;
