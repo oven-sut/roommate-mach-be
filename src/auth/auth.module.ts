@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
+import { SupabaseOtpClient } from './supabase-otp.client';
 
 @Module({
   imports: [
@@ -17,7 +18,7 @@ import { OtpService } from './otp.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, OtpService],
+  providers: [AuthService, OtpService, SupabaseOtpClient],
   exports: [JwtModule],
 })
 export class AuthModule {}

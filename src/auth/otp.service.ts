@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { createHash, randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { SupabaseOtpClient } from './supabase-otp.client';
 
 /** Codes are valid for this long after they are sent. */
 const OTP_TTL_MS = 10 * 60_000;
@@ -26,15 +27,35 @@ const SEND_WINDOW_MS = 60 * 60_000;
 const DEV_OTP = '123456';
 
 /**
- * Email one-time codes, stored in Postgres rather than in process memory so
- * they survive a restart and work when more than one instance is running.
- * Only the SHA-256 of a code is persisted.
+ * Email one-time codes.
+ *
+ * There are two ways the code itself can be produced and checked:
+ *
+ * - **Supabase** (used when SUPABASE_URL and SUPABASE_ANON_KEY are set).
+ *   Supabase generates the code and emails it with the SMTP settings from its
+ *   dashboard, because it has no general-purpose mail API - sending only
+ *   happens through an Auth flow.
+ * - **Locally**, otherwise: a code is generated here, only its SHA-256 is
+ *   stored, and wrong guesses are counted against a cap.
+ *
+ * Either way the outcome is recorded the same way, in `EmailOtp.verifiedUntil`,
+ * which is what `register()` and the OTP password reset actually read. The
+ * per-address send window applies to both, so switching provider cannot lose
+ * the protection against mail-bombing one address.
  */
 @Injectable()
 export class OtpService {
   private readonly logger = new Logger(OtpService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private supabase: SupabaseOtpClient,
+  ) {}
+
+  /** Whether Supabase owns code generation and delivery. */
+  private get usingSupabase() {
+    return this.supabase.configured;
+  }
 
   private get devOtpAllowed() {
     return process.env.ALLOW_DEV_OTP === 'true';
@@ -49,10 +70,13 @@ export class OtpService {
   }
 
   /**
-   * Issues a code and returns it so the caller can deliver it. The code is
+   * Issues a code.
+   *
+   * Returns the code when this service generated it, so the caller can deliver
+   * it, and `null` when Supabase generated and sent it. Either way the code is
    * never returned to a client unless ALLOW_DEV_OTP is on.
    */
-  async issue(email: string): Promise<string> {
+  async issue(email: string): Promise<string | null> {
     const cleanEmail = OtpService.normalize(email);
     const existing = await this.prisma.emailOtp.findUnique({
       where: { email: cleanEmail },
@@ -79,21 +103,45 @@ export class OtpService {
       );
     }
 
+    // With Supabase in charge there is no code to store: it owns the secret and
+    // checks it again on the way back. The row is still written, because the
+    // send window and the verification stamp both live on it.
+    if (this.usingSupabase) {
+      await this.supabase.send(cleanEmail);
+      await this.recordSend(cleanEmail, now, windowOpen, null);
+      return null;
+    }
+
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    await this.recordSend(cleanEmail, now, windowOpen, code);
+    return code;
+  }
+
+  /** Writes the send window, and the code hash when we own the code. */
+  private async recordSend(
+    email: string,
+    now: Date,
+    windowOpen: boolean,
+    code: string | null,
+  ) {
+    const secret = code
+      ? {
+          codeHash: OtpService.hash(code),
+          expiresAt: new Date(now.getTime() + OTP_TTL_MS),
+        }
+      : { codeHash: '', expiresAt: new Date(now.getTime() + OTP_TTL_MS) };
 
     await this.prisma.emailOtp.upsert({
-      where: { email: cleanEmail },
+      where: { email },
       create: {
-        email: cleanEmail,
-        codeHash: OtpService.hash(code),
-        expiresAt: new Date(now.getTime() + OTP_TTL_MS),
+        email,
+        ...secret,
         lastSentAt: now,
         sendsInWindow: 1,
         windowStartedAt: now,
       },
       update: {
-        codeHash: OtpService.hash(code),
-        expiresAt: new Date(now.getTime() + OTP_TTL_MS),
+        ...secret,
         attempts: 0,
         consumedAt: null,
         lastSentAt: now,
@@ -101,8 +149,6 @@ export class OtpService {
         ...(windowOpen ? {} : { windowStartedAt: now }),
       },
     });
-
-    return code;
   }
 
   /**
@@ -118,11 +164,18 @@ export class OtpService {
       return { verified: true, email: cleanEmail };
     }
 
+    const invalid = new UnauthorizedException('Invalid or expired OTP code');
+
+    if (this.usingSupabase) {
+      if (!(await this.supabase.verify(cleanEmail, submitted))) throw invalid;
+      await this.markVerified(cleanEmail);
+      return { verified: true, email: cleanEmail };
+    }
+
     const record = await this.prisma.emailOtp.findUnique({
       where: { email: cleanEmail },
     });
 
-    const invalid = new UnauthorizedException('Invalid or expired OTP code');
     if (!record || record.consumedAt || record.expiresAt < new Date()) {
       throw invalid;
     }
@@ -178,8 +231,17 @@ export class OtpService {
       .catch(() => undefined);
   }
 
-  /** Sends the code by email, or logs it when no mail provider is configured. */
-  async deliver(email: string, code: string) {
+  /**
+   * Delivers a code this service generated.
+   *
+   * A `null` code means Supabase already emailed it, so there is nothing to do.
+   * Otherwise it goes out through Resend, or - with no mail provider set up at
+   * all - to the log, which is what makes local development possible without a
+   * mailbox.
+   */
+  async deliver(email: string, code: string | null) {
+    if (code === null) return;
+
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) {
       this.logger.log(`[OTP] code for ${email} is ${code}`);
@@ -211,7 +273,8 @@ export class OtpService {
   }
 
   /** Exposes the code to the client only in development. */
-  echo(code: string): string | undefined {
+  echo(code: string | null): string | undefined {
+    if (code === null) return undefined;
     return this.devOtpAllowed ? code : undefined;
   }
 }
