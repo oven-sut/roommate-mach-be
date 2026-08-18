@@ -16,6 +16,52 @@ import { assertSafeConfig, configureApp, isProduction } from './bootstrap';
  * Note `app.init()` rather than `app.listen()` — the platform owns the socket.
  */
 
+/** `url.parse()` is deprecated; Node reports it under this code. */
+const URL_PARSE_DEPRECATION = 'DEP0169';
+
+/**
+ * Drops one deprecation warning that Vercel's own request bridge triggers.
+ *
+ * The bridge calls the deprecated `url.parse()` before our code ever runs, so
+ * Node prints DEP0169 on every cold start. It goes to stderr, which the log
+ * viewer colours as an error, and it says nothing about this application or
+ * anything anyone here can act on.
+ *
+ * Filtered by code rather than with `--no-deprecation`, so a deprecation
+ * warning from our own dependencies still gets through and still gets noticed.
+ */
+function ignorePlatformUrlParseWarning() {
+  // `process.emitWarning` has four overloads, and binding an overloaded
+  // function widens it to `any` - there is no signature that both satisfies
+  // the checker and accepts every shape Node calls it with. The arguments are
+  // passed straight back through untouched.
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+  const emitWarning: (warning: string | Error, ...rest: unknown[]) => void =
+    process.emitWarning.bind(process);
+
+  const codeOf = (warning: unknown, rest: unknown[]): string | undefined => {
+    // emitWarning(warning, type, code) and emitWarning(warning, options) are
+    // both valid, so the code can arrive in either shape.
+    for (const arg of rest) {
+      if (typeof arg === 'string' && arg.startsWith('DEP')) return arg;
+      if (arg && typeof arg === 'object' && 'code' in arg) {
+        return (arg as { code?: string }).code;
+      }
+    }
+    if (warning && typeof warning === 'object' && 'code' in warning) {
+      return (warning as { code?: string }).code;
+    }
+    return undefined;
+  };
+
+  process.emitWarning = (warning: string | Error, ...rest: unknown[]) => {
+    if (codeOf(warning, rest) === URL_PARSE_DEPRECATION) return;
+    emitWarning(warning, ...rest);
+  };
+}
+
+ignorePlatformUrlParseWarning();
+
 const server = express();
 let bootstrapping: Promise<NestExpressApplication> | null = null;
 
