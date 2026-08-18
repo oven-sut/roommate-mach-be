@@ -1,5 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PushController } from './push.controller';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { PushController, PushTokenDto } from './push.controller';
 import { PushService } from './push.service';
 import { AuthGuard } from '../features/auth.guard';
 import { JwtService } from '@nestjs/jwt';
@@ -14,6 +16,8 @@ describe('PushController', () => {
     registerToken: jest.fn(),
     unregisterToken: jest.fn(),
   };
+
+  const req = { user: { id: 'user1', role: Role.USER } };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -40,34 +44,48 @@ describe('PushController', () => {
     expect(controller).toBeDefined();
   });
 
-  it('should call registerToken on service', async () => {
+  it('registers a token for the signed-in user', async () => {
     mockPushService.registerToken.mockResolvedValue(true);
-    const req = { user: { id: 'user1', role: Role.USER } };
-    const body = { token: 'token123', device: 'android' };
-    const result = await controller.register(req, body);
+
+    const result = await controller.register(req, {
+      token: 'ExponentPushToken[abc123]',
+      device: 'android',
+    });
+
     expect(pushService.registerToken).toHaveBeenCalledWith(
       'user1',
-      'token123',
+      'ExponentPushToken[abc123]',
       'android',
     );
     expect(result).toBe(true);
   });
 
-  it('should call unregisterToken on service', async () => {
+  it('unregisters a token', async () => {
     mockPushService.unregisterToken.mockResolvedValue(true);
-    const req = { user: { id: 'user1', role: Role.USER } };
-    const body = { token: 'token123' };
-    const result = await controller.unregister(req, body);
+
+    const result = await controller.unregister(req, {
+      token: 'ExponentPushToken[abc123]',
+    });
+
     expect(pushService.unregisterToken).toHaveBeenCalledWith(
       'user1',
-      'token123',
+      'ExponentPushToken[abc123]',
     );
     expect(result).toBe(true);
   });
 
-  it('should throw an error if token is missing in register', async () => {
-    const req = { user: { id: 'user1', role: Role.USER } };
-    const body = { token: '' };
-    expect(() => controller.register(req, body)).toThrow('Token is required');
+  // Validation moved to the DTO, so a missing token is a 400 from the pipe
+  // rather than an unhandled Error surfacing as a 500.
+  it('rejects a missing token before the handler runs', async () => {
+    const errors = await validate(plainToInstance(PushTokenDto, { token: '' }));
+    expect(errors).toHaveLength(1);
+    expect(errors[0].property).toBe('token');
+  });
+
+  it('accepts a token without a device', async () => {
+    const errors = await validate(
+      plainToInstance(PushTokenDto, { token: 'ExponentPushToken[abc123]' }),
+    );
+    expect(errors).toHaveLength(0);
   });
 });

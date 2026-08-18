@@ -15,8 +15,13 @@ describe('AppController', () => {
   });
 
   describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
+    it('names the service and points at the docs and health check', () => {
+      expect(appController.getInfo()).toEqual({
+        name: 'Roommate Match API',
+        status: 'ok',
+        docs: '/api/docs',
+        health: '/health',
+      });
     });
   });
 });

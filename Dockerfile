@@ -21,6 +21,12 @@ RUN npm ci --omit=dev
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
 COPY --from=build /app/dist ./dist
+# Migrations ship with the image so the container can bring its own schema up
+# to date before serving traffic.
+COPY --from=build /app/prisma ./prisma
 
 EXPOSE 3000
-CMD ["node", "dist/main.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]

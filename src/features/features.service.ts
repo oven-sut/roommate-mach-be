@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnauthorizedException,
@@ -9,165 +10,48 @@ import {
 import { Prisma, Role, SwipeDecision } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  AppSettingsService,
+  type MatchWeights,
+} from '../config/app-settings.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { MinioService } from './minio.service';
+import {
+  QUESTION_DEFINITIONS,
+  QUESTION_KEYS,
+} from './questionnaire.definitions';
+import {
+  compareLifestyles,
+  lifestyleTags,
+  parseAnswers,
+  type Lifestyle,
+  type StoredAnswers,
+} from './scoring';
+import type { DiscoverQueryDto } from './dto/discover-query.dto';
+import type { ProfileDto } from './dto/profile.dto';
 
-type QuestionDefinition = {
-  id: string;
-  key: string;
-  step: number;
-  title: string;
-  sub: string;
-  note?: string;
-  groups: { label: string; items: string[]; active: number[] }[];
-};
-
-const QUESTION_DEFINITIONS: QuestionDefinition[] = [
-  {
-    id: 'q1',
-    key: 'q1',
-    step: 1,
-    title: 'Sleep & wake rhythm',
-    sub: 'Tell us when you usually sleep and start your day.',
-    note: 'These habits help us match students with similar daily rhythms.',
-    groups: [
-      {
-        label: 'Usual bedtime',
-        items: ['21:00 – 22:30', '23:00 – 00:30', '01:00+'],
-        active: [],
-      },
-      {
-        label: 'Usual wake-up time',
-        items: ['06:00 – 07:00', '07:00 – 08:00', '09:00+'],
-        active: [],
-      },
-    ],
-  },
-  {
-    id: 'q2',
-    key: 'q2',
-    step: 2,
-    title: 'Cleanliness & routines',
-    sub: 'Choose the habits that matter most in a shared room.',
-    groups: [
-      {
-        label: 'Non-negotiables',
-        items: [
-          'Spotless',
-          'Dishes same day',
-          'Shoes off inside',
-          'Make the bed',
-          'Shared cleaning schedule',
-        ],
-        active: [],
-      },
-      {
-        label: 'How tidy are you?',
-        items: ['1/5', '2/5', '3/5', '4/5', '5/5'],
-        active: [2],
-      },
-    ],
-  },
-  {
-    id: 'q3',
-    key: 'q3',
-    step: 3,
-    title: 'Guests & social energy',
-    sub: 'Set expectations for visitors and shared social time.',
-    groups: [
-      {
-        label: 'Guests in the room',
-        items: ['Rarely', 'Sometimes', 'Often'],
-        active: [1],
-      },
-      {
-        label: 'Who might visit?',
-        items: ['Close friends', 'Study group', 'Family', 'Partner'],
-        active: [],
-      },
-      {
-        label: 'Social energy',
-        items: ['Quiet', 'Balanced', 'Very social'],
-        active: [1],
-      },
-    ],
-  },
-  {
-    id: 'q4',
-    key: 'q4',
-    step: 4,
-    title: 'Temperature & study setup',
-    sub: 'Help us understand how you work best in your room.',
-    groups: [
-      {
-        label: 'Preferred AC temperature',
-        items: ['22–24°', '25–26°', '27°+'],
-        active: [1],
-      },
-      {
-        label: 'Need for quiet while studying',
-        items: ['1/5', '2/5', '3/5', '4/5', '5/5'],
-        active: [2],
-      },
-      {
-        label: 'Best study location',
-        items: ['In room', 'Library', 'Cafe / outside room'],
-        active: [],
-      },
-    ],
-  },
-  {
-    id: 'q5',
-    key: 'q5',
-    step: 5,
-    title: 'Lifestyle boundaries',
-    sub: 'A few practical preferences before we finish.',
-    groups: [
-      {
-        label: 'Smoking in your living environment',
-        items: ['No', 'Okay outdoors only', 'Okay indoors'],
-        active: [0],
-      },
-      {
-        label: 'Alcohol',
-        items: ['Never', 'Socially', 'Often'],
-        active: [1],
-      },
-      {
-        label: 'Pets',
-        items: ['No pets', 'Okay with some', 'Love them'],
-        active: [1],
-      },
-    ],
-  },
-  {
-    id: 'q6',
-    key: 'q6',
-    step: 6,
-    title: 'Money & shared expectations',
-    sub: 'Last step. Align on spending and compromise.',
-    groups: [
-      {
-        label: 'How should shared costs work?',
-        items: ['Split equally', 'Pay by usage', 'Flexible / discuss'],
-        active: [0],
-      },
-      {
-        label: 'How flexible are you?',
-        items: ['Low', 'Moderate', 'High'],
-        active: [1],
-      },
-    ],
-  },
-];
+/** How many candidates are scored for one discover request. */
+const DISCOVER_CANDIDATE_CAP = 500;
+const DISCOVER_PAGE_SIZE = 30;
+/** Most photos a profile can hold. */
+const MAX_PHOTOS = 6;
+const MESSAGE_PAGE_SIZE = 50;
 
 @Injectable()
 export class FeaturesService {
+  private readonly logger = new Logger(FeaturesService.name);
+
   constructor(
     private prisma: PrismaService,
     private minioService: MinioService,
+    private settings: AppSettingsService,
+    private notifications: NotificationsService,
   ) {}
 
-  private async processPhotos(userId: string, photos: string[]): Promise<string[]> {
+  private async processPhotos(
+    userId: string,
+    photos: string[],
+  ): Promise<string[]> {
     const processed: string[] = [];
     for (let i = 0; i < photos.length; i++) {
       const photo = photos[i];
@@ -175,17 +59,19 @@ export class FeaturesService {
         try {
           const extension = photo.split(';')[0].split('/')[1] || 'jpeg';
           const fileName = `profiles/${userId}/photo_${i}_${Date.now()}.${extension}`;
-          const url = await this.minioService.uploadFile(photo, fileName);
-          processed.push(url);
-        } catch (err) {
-          console.error(`Failed to upload profile photo ${i} for user ${userId}`, err);
+          processed.push(await this.minioService.uploadFile(photo, fileName));
+        } catch (error) {
+          this.logger.error(
+            `Failed to upload profile photo ${i} for user ${userId}`,
+            error as Error,
+          );
           processed.push(photo);
         }
-      } else {
+      } else if (photo) {
         processed.push(photo);
       }
     }
-    return processed;
+    return processed.slice(0, MAX_PHOTOS);
   }
 
   async me(userId: string) {
@@ -195,6 +81,7 @@ export class FeaturesService {
         id: true,
         displayName: true,
         email: true,
+        sutId: true,
         role: true,
         discoverable: true,
         notificationPrefs: true,
@@ -222,9 +109,10 @@ export class FeaturesService {
   ) {
     const update: Prisma.UserUpdateInput = {};
     if (data.displayName !== undefined) update.displayName = data.displayName;
-    if (data.discoverable !== undefined) update.discoverable = data.discoverable;
+    if (data.discoverable !== undefined)
+      update.discoverable = data.discoverable;
     if (data.notificationPrefs !== undefined)
-      update.notificationPrefs = data.notificationPrefs as Prisma.InputJsonValue;
+      update.notificationPrefs = data.notificationPrefs;
 
     return this.prisma.user.update({
       where: { id: userId },
@@ -239,7 +127,7 @@ export class FeaturesService {
     });
   }
 
-  async profile(userId: string, data: Record<string, any>) {
+  async profile(userId: string, data: ProfileDto) {
     const photos = await this.processPhotos(userId, data.photos ?? []);
     const clean = {
       age: data.age,
@@ -248,6 +136,7 @@ export class FeaturesService {
       bio: data.bio,
       year: data.year,
       roomType: data.roomType,
+      propertyType: data.propertyType,
       roommateGender: data.roommateGender,
       zone: data.zone,
       budgetMin: data.budgetMin,
@@ -255,15 +144,47 @@ export class FeaturesService {
       photos,
       completed: Boolean(data.completed),
     };
-    return this.prisma.profile.upsert({
+
+    const profile = await this.prisma.profile.upsert({
       where: { userId },
       create: { userId, ...clean },
       update: clean,
     });
+
+    if (data.displayName) {
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { displayName: data.displayName },
+      });
+    }
+
+    return profile;
   }
 
-  getQuestionnaire() {
-    return QUESTION_DEFINITIONS;
+  /**
+   * The question rows plus this user's saved selections. The app reads
+   * `answers` to reopen the questionnaire on the user's previous choices.
+   */
+  async getQuestionnaire(userId: string) {
+    const rows = await this.prisma.answer.findMany({
+      where: { userId },
+      select: { questionId: true, selections: true, updatedAt: true },
+    });
+
+    const answers: StoredAnswers = {};
+    for (const row of rows) {
+      answers[row.questionId] = (
+        Array.isArray(row.selections) ? row.selections : []
+      ) as string[][];
+    }
+
+    const updatedAt = rows.length
+      ? new Date(
+          Math.max(...rows.map((row) => row.updatedAt.getTime())),
+        ).toISOString()
+      : null;
+
+    return { questions: QUESTION_DEFINITIONS, answers, updatedAt };
   }
 
   async questionnaire(
@@ -273,6 +194,11 @@ export class FeaturesService {
   ) {
     await this.ensureQuestionsSeeded();
 
+    const selectionsFor = (key: string) =>
+      (Array.isArray(answers?.[key])
+        ? answers[key]
+        : []) as Prisma.InputJsonValue;
+
     await this.prisma.$transaction(
       QUESTION_DEFINITIONS.map((question) =>
         this.prisma.answer.upsert({
@@ -280,23 +206,18 @@ export class FeaturesService {
           create: {
             userId,
             questionId: question.id,
-            selections: (Array.isArray(answers[question.key])
-              ? answers[question.key]
-              : []) as Prisma.InputJsonValue,
+            selections: selectionsFor(question.key),
           },
-          update: {
-            selections: (Array.isArray(answers[question.key])
-              ? answers[question.key]
-              : []) as Prisma.InputJsonValue,
-          },
+          update: { selections: selectionsFor(question.key) },
         }),
       ),
     );
 
     if (completed)
-      await this.prisma.profile.updateMany({
+      await this.prisma.profile.upsert({
         where: { userId },
-        data: { completed: true },
+        create: { userId, completed: true },
+        update: { completed: true },
       });
     return { success: true };
   }
@@ -308,144 +229,366 @@ export class FeaturesService {
         const extension = documentUrl.split(';')[0].split('/')[1] || 'jpeg';
         const fileName = `verifications/${userId}/document_${Date.now()}.${extension}`;
         finalUrl = await this.minioService.uploadFile(documentUrl, fileName);
-      } catch (err) {
-        console.error(`Failed to upload verification document for user ${userId}`, err);
+      } catch (error) {
+        this.logger.error(
+          `Failed to upload verification document for user ${userId}`,
+          error as Error,
+        );
+        throw new ServiceUnavailableException(
+          'Document storage is temporarily unavailable. Please try again later.',
+        );
       }
     }
     return this.prisma.verification.upsert({
       where: { userId },
       create: { userId, documentUrl: finalUrl },
-      update: { documentUrl: finalUrl, status: 'PENDING' },
+      update: { documentUrl: finalUrl, status: 'PENDING', note: null },
     });
   }
 
-  async discover(userId: string, page?: string) {
-    const pageNum = Math.max(1, parseInt(page as string) || 1);
-    const limit = 30;
-    const offset = (pageNum - 1) * limit;
-
-    const [blockedByMe, blockedMe, swipedIds, users, answerRows] =
-      await Promise.all([
-        this.prisma.block.findMany({
-          where: { blockerId: userId },
-          select: { blockedId: true },
-        }),
-        this.prisma.block.findMany({
-          where: { blockedId: userId },
-          select: { blockerId: true },
-        }),
-        this.prisma.swipe.findMany({
-          where: { fromId: userId },
-          select: { toId: true },
-        }),
-        this.prisma.user.findMany({
-          where: {
-            id: { not: userId },
-            role: 'USER',
-            suspended: false,
-            discoverable: true,
-            profile: { is: { completed: true } },
-          },
-          include: { profile: true, verification: true },
-        }),
-        this.prisma.answer.findMany({
-          select: { userId: true, questionId: true, selections: true },
-        }),
-      ]);
-
-    const excludedIds = new Set([
-      ...blockedByMe.map((row) => row.blockedId),
-      ...blockedMe.map((row) => row.blockerId),
-      ...swipedIds.map((row) => row.toId),
-    ]);
-    const questionnaireMap = new Map<
-      string,
-      { questionId: string; selections: unknown }[]
-    >();
-    for (const row of answerRows) {
-      const entries = questionnaireMap.get(row.userId) ?? [];
-      entries.push({ questionId: row.questionId, selections: row.selections });
-      questionnaireMap.set(row.userId, entries);
-    }
-    const currentUserAnswers = questionnaireMap.get(userId) ?? [];
-
-    return users
-      .filter((user) => !excludedIds.has(user.id))
-      .map((user) => ({
-        ...user,
-        passwordHash: undefined,
-        googleId: undefined,
-        score: this.score(
-          currentUserAnswers,
-          questionnaireMap.get(user.id) ?? [],
-        ),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(offset, offset + limit);
+  /** Ids this user must never be shown: blocks in either direction. */
+  private async blockedIds(userId: string): Promise<Set<string>> {
+    const blocks = await this.prisma.block.findMany({
+      where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+      select: { blockerId: true, blockedId: true },
+    });
+    return new Set(
+      blocks.map((row) =>
+        row.blockerId === userId ? row.blockedId : row.blockerId,
+      ),
+    );
   }
 
-  private score(a: unknown, b: unknown) {
-    if (!a || !b) return 70;
-    const aa = a as { questionId: string; selections: unknown }[],
-      bb = b as { questionId: string; selections: unknown }[];
-    if (!aa.length || !bb.length) return 70;
-    const shared = aa.filter((x) =>
-      bb.some((y) => y.questionId === x.questionId),
-    );
-    if (!shared.length) return 70;
-    const matches = shared.filter(
-      (x) =>
-        JSON.stringify(x.selections) ===
-        JSON.stringify(
-          bb.find((y) => y.questionId === x.questionId)?.selections,
+  async discover(userId: string, query: DiscoverQueryDto = {}) {
+    const page = Math.max(1, query.page ?? 1);
+    const offset = (page - 1) * DISCOVER_PAGE_SIZE;
+
+    const viewer = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { profile: { select: { year: true } } },
+    });
+
+    const [blocked, swiped, weights] = await Promise.all([
+      this.blockedIds(userId),
+      this.prisma.swipe.findMany({
+        where: { fromId: userId },
+        select: { toId: true },
+      }),
+      this.settings.matchWeights(),
+    ]);
+
+    const excludedIds = [userId, ...swiped.map((row) => row.toId), ...blocked];
+
+    const profileFilters: Prisma.ProfileWhereInput = { completed: true };
+    if (query.major) profileFilters.major = query.major;
+
+    // Budget windows are ranges on both sides: keep anyone whose range
+    // overlaps the requested one, rather than requiring containment.
+    if (query.budgetMin != null)
+      profileFilters.budgetMax = { gte: query.budgetMin };
+    if (query.budgetMax != null)
+      profileFilters.budgetMin = { lte: query.budgetMax };
+
+    const viewerYear = viewer?.profile?.year ?? null;
+    if (query.yearBand && query.yearBand !== 'everyone' && viewerYear != null) {
+      if (query.yearBand === 'under') profileFilters.year = { lt: viewerYear };
+      else if (query.yearBand === 'peer') profileFilters.year = viewerYear;
+      else if (query.yearBand === 'upper')
+        profileFilters.year = { gt: viewerYear };
+    }
+
+    const candidates = await this.prisma.user.findMany({
+      where: {
+        id: { notIn: excludedIds },
+        role: 'USER',
+        suspended: false,
+        discoverable: true,
+        profile: { is: profileFilters },
+      },
+      select: {
+        id: true,
+        displayName: true,
+        createdAt: true,
+        profile: true,
+        verification: { select: { status: true } },
+        answers: { select: { questionId: true, selections: true } },
+      },
+      // Newest first is a stable, index-friendly order to cap on; the cap only
+      // bounds how many are scored, the sort below still ranks by fit.
+      orderBy: { createdAt: 'desc' },
+      take: DISCOVER_CANDIDATE_CAP,
+    });
+
+    const mine = parseAnswers(await this.answersFor(userId));
+
+    const mustMatch = query.mustMatch
+      ? query.mustMatch
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [];
+
+    const scored = candidates.map((candidate) => {
+      const theirs = parseAnswers(this.toStoredAnswers(candidate.answers));
+      const { score, breakdown } = compareLifestyles(mine, theirs, weights);
+      const { answers, ...rest } = candidate;
+      void answers; // scored above; not part of the card payload
+      return {
+        ...rest,
+        score,
+        breakdown,
+        tags: lifestyleTags(theirs),
+        lifestyle: theirs,
+      };
+    });
+
+    const filtered = scored.filter((candidate) => {
+      if (
+        query.minScore != null &&
+        candidate.score != null &&
+        candidate.score < query.minScore
+      ) {
+        return false;
+      }
+      return mustMatch.every((key) =>
+        this.satisfiesMustMatch(
+          key,
+          mine,
+          candidate.lifestyle,
+          candidate.breakdown,
         ),
-    );
-    return Math.round(55 + (40 * matches.length) / shared.length);
+      );
+    });
+
+    return filtered
+      .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+      .slice(offset, offset + DISCOVER_PAGE_SIZE)
+      .map(({ lifestyle, ...person }) => {
+        void lifestyle; // only needed while filtering
+        return person;
+      });
+  }
+
+  /**
+   * "Must match on" chips are a stricter floor on one category: the pair has
+   * to agree on it clearly, not just on balance across everything else.
+   */
+  private satisfiesMustMatch(
+    key: string,
+    mine: Lifestyle,
+    theirs: Lifestyle,
+    breakdown: {
+      sleep?: number;
+      cleanliness?: number;
+      guests?: number;
+      temperature?: number;
+    },
+  ): boolean {
+    const STRONG = 70;
+    switch (key) {
+      case 'sleep':
+        return (breakdown.sleep ?? 0) >= STRONG;
+      case 'cleanliness':
+        return (breakdown.cleanliness ?? 0) >= STRONG;
+      case 'guests':
+        return (breakdown.guests ?? 0) >= STRONG;
+      // `acTemp` is the value the app's filter chip sends (see MUST_MATCH in
+      // discovery.content.ts); the other two are accepted as aliases.
+      case 'acTemp':
+      case 'temperature':
+      case 'ac':
+        return (breakdown.temperature ?? 0) >= STRONG;
+      case 'study':
+        return (
+          mine.studyPlace == null ||
+          theirs.studyPlace == null ||
+          mine.studyPlace === theirs.studyPlace
+        );
+      case 'quiet':
+        return (
+          mine.quiet == null ||
+          theirs.quiet == null ||
+          Math.abs(mine.quiet - theirs.quiet) <= 2
+        );
+      default:
+        // An unknown chip must not silently empty the deck.
+        return true;
+    }
+  }
+
+  private toStoredAnswers(
+    rows: { questionId: string; selections: Prisma.JsonValue }[],
+  ): StoredAnswers {
+    const stored: StoredAnswers = {};
+    for (const row of rows) {
+      stored[row.questionId] = (
+        Array.isArray(row.selections) ? row.selections : []
+      ) as string[][];
+    }
+    return stored;
+  }
+
+  private async answersFor(userId: string): Promise<StoredAnswers> {
+    const rows = await this.prisma.answer.findMany({
+      where: { userId },
+      select: { questionId: true, selections: true },
+    });
+    return this.toStoredAnswers(rows);
+  }
+
+  /** Compatibility between two specific students, used by the profile screen. */
+  private async scoreBetween(viewerId: string, otherId: string) {
+    const [mine, theirs, weights] = await Promise.all([
+      this.answersFor(viewerId),
+      this.answersFor(otherId),
+      this.settings.matchWeights(),
+    ]);
+    return compareLifestyles(parseAnswers(mine), parseAnswers(theirs), weights);
+  }
+
+  /** A single student's public profile, as seen by `viewerId`. */
+  async userProfile(viewerId: string, targetId: string) {
+    if (targetId === viewerId) return this.me(viewerId);
+
+    const blocked = await this.blockedIds(viewerId);
+    if (blocked.has(targetId)) throw new NotFoundException('User not found');
+
+    const user = await this.prisma.user.findFirst({
+      where: { id: targetId, suspended: false },
+      select: {
+        id: true,
+        displayName: true,
+        createdAt: true,
+        profile: true,
+        verification: { select: { status: true } },
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const [{ score, breakdown }, match, conversation, theirAnswers] =
+      await Promise.all([
+        this.scoreBetween(viewerId, targetId),
+        this.prisma.match.findFirst({
+          where: {
+            status: 'ACTIVE',
+            OR: [
+              { userAId: viewerId, userBId: targetId },
+              { userAId: targetId, userBId: viewerId },
+            ],
+          },
+          select: { id: true, createdAt: true },
+        }),
+        this.prisma.conversation.findFirst({
+          where: {
+            OR: [
+              { userAId: viewerId, userBId: targetId },
+              { userAId: targetId, userBId: viewerId },
+            ],
+          },
+          select: { id: true },
+        }),
+        this.answersFor(targetId),
+      ]);
+
+    return {
+      ...user,
+      score,
+      breakdown,
+      tags: lifestyleTags(parseAnswers(theirAnswers)),
+      matchId: match?.id ?? null,
+      matchedAt: match?.createdAt ?? null,
+      conversationId: conversation?.id ?? null,
+    };
   }
 
   async swipe(fromId: string, toId: string, decision: SwipeDecision) {
     if (fromId === toId) throw new BadRequestException('Cannot swipe yourself');
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: toId },
+      select: { id: true, displayName: true, suspended: true },
+    });
+    if (!target || target.suspended)
+      throw new NotFoundException('User not found');
+
+    const blocked = await this.blockedIds(fromId);
+    if (blocked.has(toId))
+      throw new ForbiddenException('This user is unavailable');
+
     await this.prisma.swipe.upsert({
       where: { fromId_toId: { fromId, toId } },
       create: { fromId, toId, decision },
       update: { decision },
     });
     if (decision === 'PASS') return { matched: false };
+
+    const me = await this.prisma.user.findUnique({
+      where: { id: fromId },
+      select: { displayName: true },
+    });
+
     const other = await this.prisma.swipe.findFirst({
       where: { fromId: toId, toId: fromId, decision: 'LIKE' },
     });
-    if (!other) return { matched: false };
+
+    if (!other) {
+      await this.notifications.notify({
+        userId: toId,
+        type: 'like',
+        title: 'Someone likes you',
+        body: `${me?.displayName ?? 'A student'} liked your profile.`,
+        data: { userId: fromId },
+      });
+      return { matched: false };
+    }
+
     const [userAId, userBId] = [fromId, toId].sort();
+    const { score } = await this.scoreBetween(fromId, toId);
     const match = await this.prisma.match.upsert({
       where: { userAId_userBId: { userAId, userBId } },
-      create: { userAId, userBId, score: 88 },
-      update: { status: 'ACTIVE' },
+      create: { userAId, userBId, score: score ?? 0 },
+      update: { status: 'ACTIVE', score: score ?? 0 },
     });
-    await this.prisma.conversation.upsert({
+    const conversation = await this.prisma.conversation.upsert({
       where: { userAId_userBId: { userAId, userBId } },
       create: { userAId, userBId },
       update: {},
     });
-    await this.prisma.notification.createMany({
-      data: [
-        {
-          userId: fromId,
-          type: 'match',
-          title: "It's a Match!",
-          body: 'You can now start chatting.',
-        },
-        {
+
+    await this.notifications.notifyMany([
+      {
+        userId: fromId,
+        type: 'match',
+        title: "It's a Match!",
+        body: `You and ${target.displayName} liked each other. Say hello.`,
+        data: {
+          matchId: match.id,
+          conversationId: conversation.id,
           userId: toId,
-          type: 'match',
-          title: "It's a Match!",
-          body: 'You can now start chatting.',
         },
-      ],
-    });
-    return { matched: true, match };
+      },
+      {
+        userId: toId,
+        type: 'match',
+        title: "It's a Match!",
+        body: `You and ${me?.displayName ?? 'a student'} liked each other. Say hello.`,
+        data: {
+          matchId: match.id,
+          conversationId: conversation.id,
+          userId: fromId,
+        },
+      },
+    ]);
+
+    return {
+      matched: true,
+      match: { ...match, conversationId: conversation.id },
+      conversationId: conversation.id,
+    };
   }
 
   async matches(userId: string) {
+    const blocked = await this.blockedIds(userId);
     const matches = await this.prisma.match.findMany({
       where: {
         status: 'ACTIVE',
@@ -457,86 +600,241 @@ export class FeaturesService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return matches.map((m) => ({
-      ...m,
-      other: m.userAId === userId ? m.userB : m.userA,
-    }));
+
+    const visible = matches.filter((match) => {
+      const otherId = match.userAId === userId ? match.userBId : match.userAId;
+      return !blocked.has(otherId);
+    });
+
+    const conversations = await this.prisma.conversation.findMany({
+      where: { OR: [{ userAId: userId }, { userBId: userId }] },
+      select: { id: true, userAId: true, userBId: true },
+    });
+    const conversationByOther = new Map(
+      conversations.map((conversation) => [
+        conversation.userAId === userId
+          ? conversation.userBId
+          : conversation.userAId,
+        conversation.id,
+      ]),
+    );
+
+    return visible.map((match) => {
+      const other = match.userAId === userId ? match.userB : match.userA;
+      return {
+        ...match,
+        other,
+        conversationId: conversationByOther.get(other.id) ?? null,
+      };
+    });
   }
 
-  likes(userId: string) {
-    return this.prisma.swipe.findMany({
+  /**
+   * People who liked this user and are still waiting for an answer — i.e. the
+   * user has not swiped them back yet, in either direction.
+   */
+  async likes(userId: string) {
+    const blocked = await this.blockedIds(userId);
+    const rows = await this.prisma.swipe.findMany({
       where: {
         toId: userId,
         decision: 'LIKE',
-        from: { sentSwipes: { none: { toId: userId } } },
+        from: {
+          suspended: false,
+          // No swipe from *me* back to them.
+          receivedSwipes: { none: { fromId: userId } },
+        },
       },
       include: {
         from: { select: { id: true, displayName: true, profile: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+    return rows.filter((row) => !blocked.has(row.fromId));
   }
 
   async conversations(userId: string) {
+    const blocked = await this.blockedIds(userId);
     const rows = await this.prisma.conversation.findMany({
       where: { OR: [{ userAId: userId }, { userBId: userId }] },
       include: {
         userA: { select: { id: true, displayName: true, profile: true } },
         userB: { select: { id: true, displayName: true, profile: true } },
         messages: { take: 1, orderBy: { createdAt: 'desc' } },
+        _count: {
+          select: {
+            messages: { where: { senderId: { not: userId }, readAt: null } },
+          },
+        },
       },
       orderBy: { updatedAt: 'desc' },
     });
-    return rows.map((c) => ({
-      ...c,
-      other: c.userAId === userId ? c.userB : c.userA,
-    }));
+
+    return rows
+      .map((conversation) => ({
+        ...conversation,
+        other:
+          conversation.userAId === userId
+            ? conversation.userB
+            : conversation.userA,
+        unread: conversation._count.messages,
+      }))
+      .filter((conversation) => !blocked.has(conversation.other.id));
   }
 
-  async messages(userId: string, conversationId: string) {
-    const c = await this.prisma.conversation.findFirst({
+  /** Finds or creates the thread for a match, by match id or by the other user. */
+  async createConversation(
+    userId: string,
+    input: { matchId?: string; userId?: string },
+  ) {
+    let otherId = input.userId;
+
+    if (!otherId && input.matchId) {
+      const match = await this.prisma.match.findFirst({
+        where: {
+          id: input.matchId,
+          OR: [{ userAId: userId }, { userBId: userId }],
+        },
+      });
+      if (!match) throw new NotFoundException('Match not found');
+      otherId = match.userAId === userId ? match.userBId : match.userAId;
+    }
+
+    if (!otherId)
+      throw new BadRequestException('matchId or userId is required');
+    if (otherId === userId)
+      throw new BadRequestException('Cannot open a conversation with yourself');
+
+    const blocked = await this.blockedIds(userId);
+    if (blocked.has(otherId))
+      throw new ForbiddenException('This user is unavailable');
+
+    const match = await this.prisma.match.findFirst({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          { userAId: userId, userBId: otherId },
+          { userAId: otherId, userBId: userId },
+        ],
+      },
+      select: { id: true },
+    });
+    if (!match)
+      throw new ForbiddenException(
+        'You can only message people you matched with',
+      );
+
+    const [userAId, userBId] = [userId, otherId].sort();
+    const conversation = await this.prisma.conversation.upsert({
+      where: { userAId_userBId: { userAId, userBId } },
+      create: { userAId, userBId },
+      update: {},
+      include: {
+        userA: { select: { id: true, displayName: true, profile: true } },
+        userB: { select: { id: true, displayName: true, profile: true } },
+      },
+    });
+
+    return {
+      ...conversation,
+      other:
+        conversation.userAId === userId
+          ? conversation.userB
+          : conversation.userA,
+    };
+  }
+
+  /** Throws unless the conversation exists, belongs to the user and is open. */
+  private async assertConversationOpen(userId: string, conversationId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
       where: {
         id: conversationId,
         OR: [{ userAId: userId }, { userBId: userId }],
       },
     });
-    if (!c) throw new ForbiddenException();
-    return this.prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'asc' },
+    if (!conversation) throw new ForbiddenException();
+
+    const otherId =
+      conversation.userAId === userId
+        ? conversation.userBId
+        : conversation.userAId;
+
+    const blocked = await this.blockedIds(userId);
+    if (blocked.has(otherId))
+      throw new ForbiddenException('This conversation is no longer available');
+
+    return { conversation, otherId };
+  }
+
+  /**
+   * Oldest-first page of a thread. `before` takes an ISO timestamp and walks
+   * backwards through history, which is what the chat view scrolls into.
+   */
+  async messages(
+    userId: string,
+    conversationId: string,
+    options: { limit?: number; before?: string } = {},
+  ) {
+    await this.assertConversationOpen(userId, conversationId);
+    const take = Math.min(Math.max(options.limit ?? MESSAGE_PAGE_SIZE, 1), 100);
+
+    const rows = await this.prisma.message.findMany({
+      where: {
+        conversationId,
+        ...(options.before
+          ? { createdAt: { lt: new Date(options.before) } }
+          : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
     });
+
+    return rows.reverse();
+  }
+
+  /** Marks everything the other person sent as read. */
+  async markConversationRead(userId: string, conversationId: string) {
+    await this.assertConversationOpen(userId, conversationId);
+    const result = await this.prisma.message.updateMany({
+      where: { conversationId, senderId: { not: userId }, readAt: null },
+      data: { readAt: new Date() },
+    });
+    return { updated: result.count };
   }
 
   async send(userId: string, conversationId: string, text: string) {
     if (!text?.trim()) throw new BadRequestException('Message is empty');
-    const c = await this.prisma.conversation.findFirst({
-      where: {
-        id: conversationId,
-        OR: [{ userAId: userId }, { userBId: userId }],
-      },
-    });
-    if (!c) throw new ForbiddenException();
+    const { otherId } = await this.assertConversationOpen(
+      userId,
+      conversationId,
+    );
+
+    const body = text.trim().slice(0, 2000);
     const message = await this.prisma.message.create({
-      data: { conversationId, senderId: userId, text: text.trim() },
+      data: { conversationId, senderId: userId, text: body },
     });
     await this.prisma.conversation.update({
       where: { id: conversationId },
       data: { updatedAt: new Date() },
     });
-    const recipient = c.userAId === userId ? c.userBId : c.userAId;
-    await this.prisma.notification.create({
-      data: {
-        userId: recipient,
-        type: 'message',
-        title: 'New Message',
-        body: text.trim().slice(0, 100),
-        data: { conversationId },
-      },
+
+    const sender = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { displayName: true },
     });
+
+    await this.notifications.notify({
+      userId: otherId,
+      type: 'message',
+      title: sender?.displayName ?? 'New message',
+      body: body.slice(0, 100),
+      data: { conversationId },
+    });
+
     return message;
   }
 
-  notifications(userId: string) {
+  listNotifications(userId: string) {
     return this.prisma.notification.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -551,23 +849,70 @@ export class FeaturesService {
     });
   }
 
-  report(
+  readAllNotifications(userId: string) {
+    return this.prisma.notification.updateMany({
+      where: { userId, readAt: null },
+      data: { readAt: new Date() },
+    });
+  }
+
+  async report(
     reporterId: string,
     reportedId: string,
     reason: string,
     details?: string,
   ) {
+    if (reporterId === reportedId)
+      throw new BadRequestException('You cannot report yourself');
+
+    const reported = await this.prisma.user.findUnique({
+      where: { id: reportedId },
+      select: { id: true },
+    });
+    if (!reported) throw new NotFoundException('User not found');
+
+    const open = await this.prisma.report.findFirst({
+      where: { reporterId, reportedId, status: 'PENDING' },
+    });
+    // A second report before the first is reviewed adds nothing.
+    if (open) return open;
+
     return this.prisma.report.create({
       data: { reporterId, reportedId, reason, details },
     });
   }
 
-  block(blockerId: string, blockedId: string) {
-    return this.prisma.block.upsert({
+  /**
+   * Blocking is also an unmatch: the pair stop appearing to each other in
+   * discover, matches and the inbox.
+   */
+  async block(blockerId: string, blockedId: string) {
+    if (blockerId === blockedId)
+      throw new BadRequestException('You cannot block yourself');
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: blockedId },
+      select: { id: true },
+    });
+    if (!target) throw new NotFoundException('User not found');
+
+    const block = await this.prisma.block.upsert({
       where: { blockerId_blockedId: { blockerId, blockedId } },
       create: { blockerId, blockedId },
       update: {},
     });
+
+    await this.prisma.match.updateMany({
+      where: {
+        OR: [
+          { userAId: blockerId, userBId: blockedId },
+          { userAId: blockedId, userBId: blockerId },
+        ],
+      },
+      data: { status: 'UNMATCHED' },
+    });
+
+    return block;
   }
 
   unblock(blockerId: string, blockedId: string) {
@@ -584,7 +929,10 @@ export class FeaturesService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    return blocks.map((b) => ({ ...b.blocked, blockedAt: b.createdAt }));
+    return blocks.map((block) => ({
+      ...block.blocked,
+      blockedAt: block.createdAt,
+    }));
   }
 
   async uploadAvatar(userId: string, avatarData: string) {
@@ -601,8 +949,11 @@ export class FeaturesService {
     let url: string;
     try {
       url = await this.minioService.uploadFile(avatarData, fileName);
-    } catch (err) {
-      console.error(`Failed to upload avatar for user ${userId}`, err);
+    } catch (error) {
+      this.logger.error(
+        `Failed to upload avatar for user ${userId}`,
+        error as Error,
+      );
       throw new ServiceUnavailableException(
         'Avatar storage is temporarily unavailable. Please try again later.',
       );
@@ -610,10 +961,10 @@ export class FeaturesService {
 
     const profile = await this.prisma.profile.findUnique({ where: { userId } });
     const currentPhotos = profile?.photos ?? [];
-    const updatedPhotos = [url, ...currentPhotos.filter((p) => p !== url)].slice(
-      0,
-      6,
-    );
+    const updatedPhotos = [
+      url,
+      ...currentPhotos.filter((photo) => photo !== url),
+    ].slice(0, MAX_PHOTOS);
 
     await this.prisma.profile.upsert({
       where: { userId },
@@ -636,7 +987,11 @@ export class FeaturesService {
               OR: [
                 { displayName: { contains: q, mode: 'insensitive' } },
                 { email: { contains: q, mode: 'insensitive' } },
-                { profile: { is: { major: { contains: q, mode: 'insensitive' } } } },
+                {
+                  profile: {
+                    is: { major: { contains: q, mode: 'insensitive' } },
+                  },
+                },
               ],
             }
           : {}),
@@ -646,7 +1001,7 @@ export class FeaturesService {
         displayName: true,
         email: true,
         profile: true,
-        verification: true,
+        verification: { select: { status: true } },
         createdAt: true,
       },
       take: 50,
@@ -656,11 +1011,11 @@ export class FeaturesService {
       where: { blockerId: currentUserId },
       select: { blockedId: true },
     });
-    const blockedSet = new Set(blocks.map((b) => b.blockedId));
+    const blockedSet = new Set(blocks.map((block) => block.blockedId));
 
-    return users.map((u) => ({
-      ...u,
-      isBlocked: blockedSet.has(u.id),
+    return users.map((user) => ({
+      ...user,
+      isBlocked: blockedSet.has(user.id),
     }));
   }
 
@@ -684,9 +1039,28 @@ export class FeaturesService {
     });
   }
 
-  async changePassword(userId: string, password: string) {
+  async changePassword(
+    userId: string,
+    password: string,
+    currentPassword?: string,
+  ) {
     if (password.length < 8)
       throw new BadRequestException('Password must be at least 8 characters');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { passwordHash: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Google-only accounts have no password yet, so there is nothing to prove.
+    if (user.passwordHash) {
+      if (!currentPassword)
+        throw new BadRequestException('Current password is required');
+      if (!(await compare(currentPassword, user.passwordHash)))
+        throw new UnauthorizedException('Current password is incorrect');
+    }
+
     return this.prisma.user.update({
       where: { id: userId },
       data: { passwordHash: await hash(password, 12) },
@@ -716,7 +1090,7 @@ export class FeaturesService {
     return Promise.all([
       this.prisma.user.count({ where: { role: 'USER' } }),
       this.prisma.user.count({ where: { role: 'USER', suspended: false } }),
-      this.prisma.match.count(),
+      this.prisma.match.count({ where: { status: 'ACTIVE' } }),
       this.prisma.message.count(),
       this.prisma.report.count({ where: { status: 'PENDING' } }),
     ]).then(([members, active, matches, messages, reports]) => ({
@@ -738,19 +1112,69 @@ export class FeaturesService {
     });
   }
 
-  suspend(id: string, suspended: boolean) {
-    return this.prisma.user.update({
+  async suspend(id: string, suspended: boolean) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const updated = await this.prisma.user.update({
       where: { id },
       data: { suspended },
       select: { id: true, suspended: true },
     });
+
+    await this.notifications.notify({
+      userId: id,
+      type: 'system',
+      title: suspended ? 'Account suspended' : 'Account reinstated',
+      body: suspended
+        ? 'Your account has been suspended. Contact support if you think this is a mistake.'
+        : 'Your account is active again. Welcome back.',
+    });
+
+    return updated;
   }
 
-  verify(id: string, status: 'VERIFIED' | 'REJECTED') {
-    return this.prisma.verification.update({
-      where: { userId: id },
-      data: { status, documentUrl: null },
+  /** Approves or rejects a student's verification and tells them the outcome. */
+  async verify(id: string, status: 'VERIFIED' | 'REJECTED', note?: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true },
     });
+    if (!user) throw new NotFoundException('User not found');
+
+    const existing = await this.prisma.verification.findUnique({
+      where: { userId: id },
+      select: { documentUrl: true },
+    });
+
+    const verification = await this.prisma.verification.upsert({
+      where: { userId: id },
+      create: { userId: id, status, note, documentUrl: null },
+      update: { status, note, documentUrl: null },
+    });
+
+    // The document has served its purpose; holding student ID scans after a
+    // decision is data we do not need.
+    if (existing?.documentUrl) {
+      await this.minioService.deleteFile(existing.documentUrl);
+    }
+
+    await this.notifications.notify({
+      userId: id,
+      type: 'system',
+      title:
+        status === 'VERIFIED' ? 'You are verified' : 'Verification rejected',
+      body:
+        note ??
+        (status === 'VERIFIED'
+          ? 'Your student status has been confirmed.'
+          : 'We could not confirm your student status. You can submit a new document.'),
+    });
+
+    return verification;
   }
 
   reports() {
@@ -763,16 +1187,60 @@ export class FeaturesService {
     });
   }
 
-  config() {
-    return this.prisma.appConfig.findMany();
+  async resolveReport(id: string, status: 'RESOLVED' | 'DISMISSED') {
+    const report = await this.prisma.report.findUnique({ where: { id } });
+    if (!report) throw new NotFoundException('Report not found');
+    return this.prisma.report.update({ where: { id }, data: { status } });
   }
 
-  setConfig(key: string, value: unknown) {
-    return this.prisma.appConfig.upsert({
-      where: { key },
-      create: { key, value: value as Prisma.InputJsonValue },
-      update: { value: value as Prisma.InputJsonValue },
-    });
+  /**
+   * Settings as one object, which is the shape the admin screen edits. Stored
+   * per key in `AppConfig` so a single setting can be changed on its own.
+   */
+  async config() {
+    const [emailDomains, weights] = await Promise.all([
+      this.settings.allowedEmailDomains(),
+      this.settings.matchWeights(),
+    ]);
+    return { emailDomains: emailDomains.join(', '), weights };
+  }
+
+  async setConfig(values: {
+    emailDomains?: string | string[];
+    weights?: Partial<MatchWeights>;
+  }) {
+    if (values.emailDomains !== undefined) {
+      const domains = (
+        Array.isArray(values.emailDomains)
+          ? values.emailDomains
+          : values.emailDomains.split(',')
+      )
+        .map((domain) => domain.trim().toLowerCase().replace(/^@/, ''))
+        .filter(Boolean);
+      if (!domains.length)
+        throw new BadRequestException('At least one email domain is required');
+      await this.settings.write('emailDomains', domains);
+    }
+
+    if (values.weights !== undefined) {
+      const weights = values.weights;
+      const total = Object.values(weights).reduce(
+        (sum, value) => sum + (Number(value) || 0),
+        0,
+      );
+      if (total <= 0)
+        throw new BadRequestException(
+          'Match weights must add up to more than 0',
+        );
+      await this.settings.write('weights', weights);
+    }
+
+    return this.config();
+  }
+
+  async setConfigKey(key: string, value: unknown) {
+    await this.settings.write(key, value);
+    return { key, value };
   }
 
   private questionsSeeded = false;
@@ -813,16 +1281,10 @@ export class FeaturesService {
   }
 
   private async getAnswers(userId: string) {
-    const rows = await this.prisma.answer.findMany({
-      where: { userId },
-      select: { questionId: true, selections: true },
-    });
-    const byQuestionId = new Map(
-      rows.map((row) => [row.questionId, row.selections]),
-    );
-    return QUESTION_DEFINITIONS.map((question) => ({
-      questionId: question.id,
-      selections: byQuestionId.get(question.id) ?? [],
+    const stored = await this.answersFor(userId);
+    return QUESTION_KEYS.map((key) => ({
+      questionId: key,
+      selections: stored[key] ?? [],
     }));
   }
 }
