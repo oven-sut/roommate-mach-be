@@ -3,7 +3,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
-import { MinioService } from '../features/minio.service';
+import { StorageService } from '../storage/storage.service';
 
 type Check = { status: 'up' | 'down'; error?: string };
 
@@ -20,7 +20,7 @@ type Check = { status: 'up' | 'down'; error?: string };
 export class HealthController {
   constructor(
     private prisma: PrismaService,
-    private minio: MinioService,
+    private storage: StorageService,
   ) {}
 
   @Get()
@@ -39,7 +39,7 @@ export class HealthController {
   async ready(@Res({ passthrough: true }) res: Response) {
     const [database, storage] = await Promise.all([
       this.check(() => this.prisma.$queryRaw`SELECT 1`),
-      this.check(() => this.minio.ping()),
+      this.check(() => this.storage.ping()),
     ]);
 
     const healthy = database.status === 'up' && storage.status === 'up';

@@ -15,7 +15,7 @@ import {
   type MatchWeights,
 } from '../config/app-settings.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { MinioService } from './minio.service';
+import { StorageService } from '../storage/storage.service';
 import {
   QUESTION_DEFINITIONS,
   QUESTION_KEYS,
@@ -43,7 +43,7 @@ export class FeaturesService {
 
   constructor(
     private prisma: PrismaService,
-    private minioService: MinioService,
+    private storage: StorageService,
     private settings: AppSettingsService,
     private notifications: NotificationsService,
   ) {}
@@ -59,7 +59,7 @@ export class FeaturesService {
         try {
           const extension = photo.split(';')[0].split('/')[1] || 'jpeg';
           const fileName = `profiles/${userId}/photo_${i}_${Date.now()}.${extension}`;
-          processed.push(await this.minioService.uploadFile(photo, fileName));
+          processed.push(await this.storage.uploadFile(photo, fileName));
         } catch (error) {
           this.logger.error(
             `Failed to upload profile photo ${i} for user ${userId}`,
@@ -228,7 +228,7 @@ export class FeaturesService {
       try {
         const extension = documentUrl.split(';')[0].split('/')[1] || 'jpeg';
         const fileName = `verifications/${userId}/document_${Date.now()}.${extension}`;
-        finalUrl = await this.minioService.uploadFile(documentUrl, fileName);
+        finalUrl = await this.storage.uploadFile(documentUrl, fileName);
       } catch (error) {
         this.logger.error(
           `Failed to upload verification document for user ${userId}`,
@@ -948,7 +948,7 @@ export class FeaturesService {
     const fileName = `avatars/${userId}/avatar_${Date.now()}.${extension}`;
     let url: string;
     try {
-      url = await this.minioService.uploadFile(avatarData, fileName);
+      url = await this.storage.uploadFile(avatarData, fileName);
     } catch (error) {
       this.logger.error(
         `Failed to upload avatar for user ${userId}`,
@@ -1159,7 +1159,7 @@ export class FeaturesService {
     // The document has served its purpose; holding student ID scans after a
     // decision is data we do not need.
     if (existing?.documentUrl) {
-      await this.minioService.deleteFile(existing.documentUrl);
+      await this.storage.deleteFile(existing.documentUrl);
     }
 
     await this.notifications.notify({

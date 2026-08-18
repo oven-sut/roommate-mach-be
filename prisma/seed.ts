@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { PrismaClient } from '@prisma/client';
 import { hash } from 'bcryptjs';
 import { QUESTION_DEFINITIONS } from '../src/features/questionnaire.definitions';
@@ -144,7 +143,9 @@ async function seedConfig() {
  */
 async function seedDemoUsers() {
   if (process.env.SEED_DEMO_USERS !== 'true') {
-    console.log('Skipping demo users (set SEED_DEMO_USERS=true to create them)');
+    console.log(
+      'Skipping demo users (set SEED_DEMO_USERS=true to create them)',
+    );
     return;
   }
 

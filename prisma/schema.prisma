@@ -3,7 +3,14 @@ generator client {
 }
 datasource db {
   provider = "postgresql"
+  // Pooled connection (Supabase transaction mode, port 6543). A serverless
+  // function opens a connection per invocation, so it must go through the
+  // pooler or the database runs out of connections.
   url = env("DATABASE_URL")
+  // Session-mode connection (port 5432) for migrations, which need features
+  // the transaction pooler does not support. Falls back to DATABASE_URL when
+  // unset, which is what a plain local Postgres wants.
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {

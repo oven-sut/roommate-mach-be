@@ -8,6 +8,7 @@ import { AuthModule } from './auth/auth.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AppSettingsModule } from './config/app-settings.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { StorageModule } from './storage/storage.module';
 import { FeaturesModule } from './features/features.module';
 import { HealthModule } from './health/health.module';
 import { PushModule } from './push/push.module';
@@ -20,6 +21,7 @@ import { PrismaExceptionFilter } from './common/filters/prisma-exception.filter'
     ThrottlerModule.forRoot([{ name: 'default', ttl: 60_000, limit: 300 }]),
     PrismaModule,
     AppSettingsModule,
+    StorageModule,
     NotificationsModule,
     AuthModule,
     FeaturesModule,

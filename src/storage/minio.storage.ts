@@ -1,14 +1,20 @@
 import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as Minio from 'minio';
+import { StorageService, decodeUpload } from './storage.service';
 
+/** MinIO-backed storage: local development and any container deployment. */
 @Injectable()
-export class MinioService implements OnModuleInit {
+export class MinioStorageService
+  extends StorageService
+  implements OnModuleInit
+{
   private minioClient: Minio.Client;
   private bucketName: string;
-  private readonly logger = new Logger(MinioService.name);
+  private readonly logger = new Logger(MinioStorageService.name);
 
   constructor(private configService: ConfigService) {
+    super();
     const endPoint = this.configService.get<string>(
       'MINIO_ENDPOINT',
       'localhost',
@@ -77,23 +83,11 @@ export class MinioService implements OnModuleInit {
     fileName: string,
     mimeType: string = 'image/jpeg',
   ): Promise<string> {
-    let buffer: Buffer;
-    if (typeof fileData === 'string') {
-      // Check if it has data URI prefix
-      const matches = fileData.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
-      if (matches) {
-        mimeType = matches[1];
-        buffer = Buffer.from(matches[2], 'base64');
-      } else {
-        // Assume it is a raw base64 string
-        buffer = Buffer.from(fileData, 'base64');
-      }
-    } else {
-      buffer = fileData;
-    }
+    const upload = decodeUpload(fileData, mimeType);
+    const buffer = upload.buffer;
 
     const metaData = {
-      'Content-Type': mimeType,
+      'Content-Type': upload.mimeType,
     };
 
     await this.minioClient.putObject(

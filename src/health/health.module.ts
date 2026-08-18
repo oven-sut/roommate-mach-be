@@ -1,9 +1,8 @@
 import { Module } from '@nestjs/common';
-import { FeaturesModule } from '../features/features.module';
 import { HealthController } from './health.controller';
 
 @Module({
-  imports: [FeaturesModule],
+  // PrismaModule and StorageModule are both global.
   controllers: [HealthController],
 })
 export class HealthModule {}

@@ -6,7 +6,9 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['eslint.config.mjs'],
+    // `api/index.js` is a plain-JS bridge that lives outside the TypeScript
+    // project on purpose, so the type-aware rules cannot parse it.
+    ignores: ['eslint.config.mjs', 'api/**', 'dist/**', 'coverage/**'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

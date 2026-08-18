@@ -8,7 +8,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { hash } from 'bcryptjs';
 import { FeaturesService } from './features.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { MinioService } from './minio.service';
+import { StorageService } from '../storage/storage.service';
 import {
   AppSettingsService,
   DEFAULT_MATCH_WEIGHTS,
@@ -57,7 +57,7 @@ describe('FeaturesService', () => {
   let service: FeaturesService;
   let prisma: ReturnType<typeof prismaMock>;
   let notifications: Mock;
-  let minio: Mock;
+  let storage: Mock;
 
   const ME = '11111111-1111-4111-8111-111111111111';
   const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -65,13 +65,13 @@ describe('FeaturesService', () => {
   beforeEach(async () => {
     prisma = prismaMock();
     notifications = { notify: jest.fn(), notifyMany: jest.fn() };
-    minio = { uploadFile: jest.fn(), deleteFile: jest.fn(), ping: jest.fn() };
+    storage = { uploadFile: jest.fn(), deleteFile: jest.fn(), ping: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         FeaturesService,
         { provide: PrismaService, useValue: prisma },
-        { provide: MinioService, useValue: minio },
+        { provide: StorageService, useValue: storage },
         {
           provide: AppSettingsService,
           useValue: {
@@ -552,7 +552,7 @@ describe('FeaturesService', () => {
       await service.verify(OTHER, 'VERIFIED');
 
       expect(prisma.verification.upsert).toHaveBeenCalled();
-      expect(minio.deleteFile).not.toHaveBeenCalled();
+      expect(storage.deleteFile).not.toHaveBeenCalled();
       expect(notifications.notify).toHaveBeenCalledWith(
         expect.objectContaining({ userId: OTHER, type: 'system' }),
       );
@@ -565,7 +565,7 @@ describe('FeaturesService', () => {
       });
 
       await service.verify(OTHER, 'REJECTED', 'Unreadable photo');
-      expect(minio.deleteFile).toHaveBeenCalledWith(
+      expect(storage.deleteFile).toHaveBeenCalledWith(
         'http://minio/roommate-match/verifications/a.jpg',
       );
     });
