@@ -23,7 +23,8 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "ts-node prisma/seed.ts",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "vercel-build": "prisma generate && prisma migrate deploy && nest build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1112.0",
