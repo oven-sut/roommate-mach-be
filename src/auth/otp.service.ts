@@ -14,8 +14,15 @@ const OTP_TTL_MS = 10 * 60_000;
 const VERIFICATION_TTL_MS = 30 * 60_000;
 /** Wrong guesses allowed before the code is burned. */
 const MAX_ATTEMPTS = 5;
-/** Minimum gap between sends to the same address. */
-const RESEND_COOLDOWN_MS = 30_000;
+/**
+ * Minimum gap between sends to the same address.
+ *
+ * Matches the cooldown Supabase applies to its own OTP mail. A shorter one here
+ * would let a request through only for Supabase to refuse it, turning a clear
+ * "wait a moment" into a confusing error from a service the caller never knew
+ * was involved.
+ */
+const RESEND_COOLDOWN_MS = 60_000;
 /**
  * Sends allowed per address per hour. This is the real defence against
  * mail-bombing someone: a per-IP limit would punish a whole campus behind one

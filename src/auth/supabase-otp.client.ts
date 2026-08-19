@@ -1,4 +1,10 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 
 /**
  * Sends and checks one-time codes through Supabase Auth.
@@ -72,15 +78,23 @@ export class SupabaseOtpClient {
       `Supabase refused to send the code to ${email}: ${detail}`,
     );
 
-    // Supabase applies its own hourly cap on outgoing auth mail, separate from
-    // this API's per-address limit. Say so rather than reporting a generic
-    // failure, because the fix is a dashboard setting.
+    // Supabase enforces its own cooldown per address and an hourly cap per
+    // project. Both come back as 429, and its message names the wait in
+    // seconds, which is more use to the caller than anything we could invent.
+    // These must not become a 500: nothing is broken, the caller is early.
     if (response.status === 429) {
-      throw new Error(
-        'Supabase is rate limiting verification emails. Raise the limit under Authentication > Rate Limits.',
+      throw new HttpException(
+        this.messageOf(detail) ??
+          'Too many verification emails just now. Please try again shortly.',
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    throw new Error(`Could not send the verification email (${detail})`);
+
+    // Anything else is a delivery problem on our side of the fence, not
+    // something the student did wrong.
+    throw new ServiceUnavailableException(
+      'Could not send the verification email. Please try again in a moment.',
+    );
   }
 
   /** Checks a submitted code. Returns false when Supabase rejects it. */
@@ -98,14 +112,25 @@ export class SupabaseOtpClient {
 
     const detail = await this.describe(response);
     if (response.status === 429) {
-      throw new UnauthorizedException(
+      throw new HttpException(
         'Too many attempts. Please request a new code.',
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
     this.logger.error(
       `Supabase could not verify the code for ${email}: ${detail}`,
     );
-    throw new Error(`Could not verify the code (${detail})`);
+    // Deliberately not reported as a wrong code: telling someone to retype a
+    // code that was fine sends them in circles.
+    throw new ServiceUnavailableException(
+      'Could not check the code right now. Please try again in a moment.',
+    );
+  }
+
+  /** The human-readable half of a "<status>: <message>" detail string. */
+  private messageOf(detail: string): string | null {
+    const separator = detail.indexOf(': ');
+    return separator === -1 ? null : detail.slice(separator + 2);
   }
 
   /** Pulls the most useful message out of a GoTrue error response. */

@@ -191,7 +191,8 @@ describe('OtpService', () => {
 
   it('resends once the cooldown has passed, invalidating the old code', async () => {
     const first = await service.issue(EMAIL);
-    table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 60_000);
+    // Past the cooldown, still inside the hourly window.
+    table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 90_000);
     const second = await service.issue(EMAIL);
 
     expect(second).not.toBe(first);
@@ -205,7 +206,7 @@ describe('OtpService', () => {
     for (let i = 0; i < 5; i++) {
       await service.issue(EMAIL);
       // Step past the 30s cooldown without leaving the hourly window.
-      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 60_000);
+      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 90_000);
     }
 
     await expect(service.issue(EMAIL)).rejects.toThrow(/Too many codes/);
@@ -214,7 +215,7 @@ describe('OtpService', () => {
   it('starts a fresh allowance once the hour is up', async () => {
     for (let i = 0; i < 5; i++) {
       await service.issue(EMAIL);
-      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 60_000);
+      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 90_000);
     }
 
     const row = table.rows.get(EMAIL)!;
@@ -300,7 +301,7 @@ describe('OtpService with Supabase delivering the mail', () => {
   it('caps sends per address even though Supabase does the mailing', async () => {
     for (let i = 0; i < 5; i++) {
       await service.issue(EMAIL);
-      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 60_000);
+      table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 90_000);
     }
 
     await expect(service.issue(EMAIL)).rejects.toThrow(/Too many codes/);

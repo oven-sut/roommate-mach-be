@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { HttpException } from '@nestjs/common';
 import { SupabaseOtpClient } from './supabase-otp.client';
 
 describe('SupabaseOtpClient', () => {
@@ -114,24 +114,30 @@ describe('SupabaseOtpClient', () => {
       );
     });
 
-    it('points at the dashboard setting when Supabase rate limits the mail', async () => {
+    it('passes on the wait Supabase asks for, as a 429 rather than a 500', async () => {
+      // Supabase's own per-address cooldown. Its wording names the seconds
+      // left, which is more use than anything invented here.
       global.fetch = respond(429, {
-        msg: 'email rate limit exceeded',
+        msg: 'For security purposes, you can only request this after 9 seconds.',
       });
 
-      await expect(client.send('student@g.sut.ac.th')).rejects.toThrow(
-        /Rate Limits/,
-      );
+      const error = await client
+        .send('student@g.sut.ac.th')
+        .catch((e: HttpException) => e);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(429);
+      expect((error as HttpException).message).toContain('after 9 seconds');
     });
 
-    it('surfaces the reason Supabase gave for a refusal', async () => {
-      global.fetch = respond(400, {
-        msg: 'Signups not allowed for otp',
-      });
+    it("reports any other refusal as a delivery problem, not the caller's fault", async () => {
+      global.fetch = respond(400, { msg: 'Signups not allowed for otp' });
 
-      await expect(client.send('student@g.sut.ac.th')).rejects.toThrow(
-        /Signups not allowed for otp/,
-      );
+      const error = await client
+        .send('student@g.sut.ac.th')
+        .catch((e: HttpException) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
     });
 
     it('still fails usefully when the error body is not JSON', async () => {
@@ -141,7 +147,11 @@ describe('SupabaseOtpClient', () => {
         json: () => Promise.reject(new Error('not json')),
       });
 
-      await expect(client.send('student@g.sut.ac.th')).rejects.toThrow(/500/);
+      const error = await client
+        .send('student@g.sut.ac.th')
+        .catch((e: HttpException) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
     });
   });
 
@@ -187,12 +197,14 @@ describe('SupabaseOtpClient', () => {
       ).resolves.toBe(false);
     });
 
-    it('raises the attempt limit as an auth error', async () => {
+    it('raises the attempt limit as a 429', async () => {
       global.fetch = respond(429);
 
-      await expect(
-        client.verify('student@g.sut.ac.th', '000000'),
-      ).rejects.toThrow(UnauthorizedException);
+      const error = await client
+        .verify('student@g.sut.ac.th', '000000')
+        .catch((e: HttpException) => e);
+
+      expect((error as HttpException).getStatus()).toBe(429);
     });
 
     it('throws when Supabase itself is broken, instead of failing the code', async () => {
@@ -200,9 +212,11 @@ describe('SupabaseOtpClient', () => {
       // student to retype a code that was fine.
       global.fetch = respond(500, { msg: 'internal error' });
 
-      await expect(
-        client.verify('student@g.sut.ac.th', '123456'),
-      ).rejects.toThrow(/internal error/);
+      const error = await client
+        .verify('student@g.sut.ac.th', '123456')
+        .catch((e: HttpException) => e);
+
+      expect((error as HttpException).getStatus()).toBe(503);
     });
   });
 });
