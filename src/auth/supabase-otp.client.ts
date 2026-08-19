@@ -20,19 +20,32 @@ export class SupabaseOtpClient {
     return process.env.SUPABASE_URL?.replace(/\/$/, '');
   }
 
-  private get anonKey() {
-    return process.env.SUPABASE_ANON_KEY;
+  /**
+   * The project's public API key.
+   *
+   * Supabase has two generations of these: the newer `sb_publishable_...`
+   * keys, and the legacy `anon` JWT. Either is accepted, so a project on
+   * either scheme works without a code change.
+   */
+  private get publishableKey() {
+    return (
+      process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY
+    );
   }
 
   /** True once both settings are present, which is what selects this path. */
   get configured(): boolean {
-    return Boolean(this.url && this.anonKey);
+    return Boolean(this.url && this.publishableKey);
   }
 
   private headers() {
+    // `apikey` is what authenticates the project. The legacy anon key is also
+    // a valid bearer token and is sent as one for compatibility; the newer
+    // publishable keys are not JWTs, so they are not.
+    const key = this.publishableKey as string;
     return {
-      apikey: this.anonKey as string,
-      Authorization: `Bearer ${this.anonKey as string}`,
+      apikey: key,
+      ...(key.startsWith('eyJ') ? { Authorization: `Bearer ${key}` } : {}),
       'Content-Type': 'application/json',
     };
   }

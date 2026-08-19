@@ -14,8 +14,9 @@ describe('SupabaseOtpClient', () => {
     });
 
   beforeEach(() => {
+    delete process.env.SUPABASE_ANON_KEY;
     process.env.SUPABASE_URL = 'https://project.supabase.co';
-    process.env.SUPABASE_ANON_KEY = 'anon-key';
+    process.env.SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test-key';
     client = new SupabaseOtpClient();
   });
 
@@ -29,12 +30,54 @@ describe('SupabaseOtpClient', () => {
     it('is on only when both settings are present', () => {
       expect(client.configured).toBe(true);
 
-      delete process.env.SUPABASE_ANON_KEY;
+      delete process.env.SUPABASE_PUBLISHABLE_KEY;
       expect(new SupabaseOtpClient().configured).toBe(false);
 
-      process.env.SUPABASE_ANON_KEY = 'anon-key';
+      process.env.SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test-key';
       delete process.env.SUPABASE_URL;
       expect(new SupabaseOtpClient().configured).toBe(false);
+    });
+
+    it('accepts the legacy anon key as well', () => {
+      delete process.env.SUPABASE_PUBLISHABLE_KEY;
+      process.env.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiJ9.legacy';
+
+      expect(new SupabaseOtpClient().configured).toBe(true);
+    });
+  });
+
+  describe('headers', () => {
+    it('sends a publishable key only as apikey, never as a bearer token', async () => {
+      // The new keys are not JWTs, so presenting one as a bearer token would
+      // be handing GoTrue something it cannot parse as a session.
+      const fetchMock = respond(200);
+      global.fetch = fetchMock;
+
+      await client.send('student@g.sut.ac.th');
+
+      const headers = (
+        fetchMock.mock.calls[0][1] as {
+          headers: Record<string, string>;
+        }
+      ).headers;
+      expect(headers.apikey).toBe('sb_publishable_test-key');
+      expect(headers.Authorization).toBeUndefined();
+    });
+
+    it('still sends the legacy anon key as a bearer token', async () => {
+      delete process.env.SUPABASE_PUBLISHABLE_KEY;
+      process.env.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiJ9.legacy';
+      const fetchMock = respond(200);
+      global.fetch = fetchMock;
+
+      await new SupabaseOtpClient().send('student@g.sut.ac.th');
+
+      const headers = (
+        fetchMock.mock.calls[0][1] as {
+          headers: Record<string, string>;
+        }
+      ).headers;
+      expect(headers.Authorization).toBe('Bearer eyJhbGciOiJIUzI1NiJ9.legacy');
     });
   });
 
@@ -50,7 +93,7 @@ describe('SupabaseOtpClient', () => {
         { headers: Record<string, string>; body: string },
       ];
       expect(url).toBe('https://project.supabase.co/auth/v1/otp');
-      expect(init.headers.apikey).toBe('anon-key');
+      expect(init.headers.apikey).toBe('sb_publishable_test-key');
       expect(JSON.parse(init.body)).toEqual({
         email: 'student@g.sut.ac.th',
         // Registration happens before the address has an account, and Supabase
@@ -131,8 +174,13 @@ describe('SupabaseOtpClient', () => {
       ).resolves.toBe(false);
     });
 
-    it('treats a 403 the same way', async () => {
-      global.fetch = respond(403);
+    it('treats a 403 the same way, which is what Supabase actually returns', async () => {
+      // Verified against the live API: a wrong code comes back as
+      // 403 {"error_code":"otp_expired"}, not 401.
+      global.fetch = respond(403, {
+        error_code: 'otp_expired',
+        msg: 'Token has expired or is invalid',
+      });
 
       await expect(
         client.verify('student@g.sut.ac.th', '000000'),
