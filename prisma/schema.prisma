@@ -8,8 +8,9 @@ datasource db {
   // pooler or the database runs out of connections.
   url = env("DATABASE_URL")
   // Session-mode connection (port 5432) for migrations, which need features
-  // the transaction pooler does not support. Falls back to DATABASE_URL when
-  // unset, which is what a plain local Postgres wants.
+  // the transaction pooler does not support. Prisma 6 refuses to load this
+  // schema when the variable is missing, so a plain local Postgres sets it to
+  // the same URL as DATABASE_URL rather than leaving it out.
   directUrl = env("DIRECT_URL")
 }
 
