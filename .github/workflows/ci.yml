@@ -1,0 +1,185 @@
+name: CI
+
+# The API's continuous integration pipeline. Every push to main and every pull
+# request runs the same four checks that a developer runs locally, so a broken
+# build is caught before it reaches Vercel.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the run still in flight - there is no
+# point paying for a result nobody will read.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.x'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # The generated client is a compile-time dependency of nearly every file,
+      # so it has to exist before anything type-aware runs.
+      - run: npx prisma generate
+      - run: npm run lint:ci
+
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - name: Run Jest with coverage
+        run: npm run test:cov -- --ci
+      - name: Publish coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage/
+          retention-days: 14
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - name: Publish build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-dist
+          path: dist/
+          retention-days: 7
+
+  e2e-tests:
+    name: E2E tests
+    runs-on: ubuntu-latest
+    # The end-to-end suite drives the real HTTP surface, so it needs the real
+    # dependencies: a Postgres to migrate into and an S3 bucket to upload to.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: roommate_match
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d roommate_match"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/roommate_match?schema=public
+      JWT_SECRET: ci-only-secret-not-used-anywhere-else
+      ADMIN_EMAIL: admin@sut.ac.th
+      ALLOWED_EMAIL_DOMAINS: g.sut.ac.th,sut.ac.th
+      # Lets the suite log in with the fixed 123456 code instead of a mailbox.
+      ALLOW_DEV_OTP: 'true'
+      STORAGE_DRIVER: minio
+      MINIO_ENDPOINT: localhost
+      MINIO_PORT: '9000'
+      MINIO_USE_SSL: 'false'
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET_NAME: roommate-match
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+
+      # MinIO cannot be a `services:` entry - the image needs a `server /data`
+      # argument, and service containers have no way to pass one.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio server /data
+      - name: Wait for MinIO to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9000/minio/health/live; then
+              echo "MinIO is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "MinIO never became healthy"; docker logs minio; exit 1
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy
+
+      - name: Run end-to-end suite
+        run: npm run test:e2e -- --ci --runInBand
+
+      - name: Dump MinIO logs on failure
+        if: failure()
+        run: docker logs minio
+
+  docker-image:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    # Vercel is the deploy target today, but the Dockerfile is the fallback and
+    # a Dockerfile that has quietly stopped building is worse than none.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: roommate-match-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  ci:
+    name: CI passed
+    # A single job to require in branch protection, so adding a check above does
+    # not mean editing the repository settings again.
+    if: always()
+    needs: [lint, unit-tests, build, e2e-tests, docker-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any upstream job did not succeed
+        run: |
+          echo "lint:         ${{ needs.lint.result }}"
+          echo "unit-tests:   ${{ needs.unit-tests.result }}"
+          echo "build:        ${{ needs.build.result }}"
+          echo "e2e-tests:    ${{ needs.e2e-tests.result }}"
+          echo "docker-image: ${{ needs.docker-image.result }}"
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            exit 1
+          fi

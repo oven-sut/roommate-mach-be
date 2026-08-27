@@ -1,5 +1,7 @@
 # Roommate Match — Backend ⚙️
 
+[![CI](https://github.com/oven-sut/roommate-mach-be/actions/workflows/ci.yml/badge.svg)](https://github.com/oven-sut/roommate-mach-be/actions/workflows/ci.yml)
+
 REST API สำหรับแอปหาเพื่อนร่วมห้องของนักศึกษา มทส. — **NestJS 11 + PostgreSQL 16 + Prisma 6**
 ยืนยันตัวตนด้วย **JWT + bcrypt** · OTP ทางอีเมลผ่าน **Resend** · push ผ่าน **Expo** · เก็บรูปใน **MinIO**
 
@@ -165,6 +167,17 @@ npm run test:e2e # e2e — 77 เทสต์ (ต้องมี docker compose
 ```
 
 e2e ยิงกับฐานข้อมูลจริงและลบข้อมูลที่สร้างทิ้งเมื่อจบ **อย่าชี้ไปที่ฐานข้อมูลที่ใช้ร่วมกับคนอื่น**
+
+---
+
+## CI
+
+ทุก push และทุก PR ผ่าน GitHub Actions: lint → unit tests → build → e2e (Postgres + MinIO จริง) → docker build
+รายละเอียดทั้งหมดอยู่ใน [`docs/ci-pipeline.md`](./docs/ci-pipeline.md)
+
+```bash
+npm run lint:ci   # แบบเดียวกับที่ CI รัน (warning = พัง)
+```
 
 ---
 

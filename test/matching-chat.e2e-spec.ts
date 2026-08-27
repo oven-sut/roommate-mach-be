@@ -155,11 +155,9 @@ describe('Matching, chat, safety and admin (e2e)', () => {
         .set(auth('owl'))
         .expect(200);
 
-      const byId = new Map<string, { score: number }>(
-        res.body.map((person: { id: string; score: number }) => [
-          person.id,
-          person,
-        ]),
+      const people = res.body as { id: string; score: number }[];
+      const byId = new Map(
+        people.map((person) => [person.id, person] as const),
       );
 
       // `third` answered exactly as `owl` did; `lark` is the opposite.
