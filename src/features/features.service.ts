@@ -1122,16 +1122,56 @@ export class FeaturesService {
     );
   }
 
-  adminUsers() {
-    return this.prisma.user.findMany({
-      where: { role: 'USER' },
-      include: {
-        _count: { select: { reportsReceived: true } },
-        verification: true,
-        profile: { select: { major: true, year: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  /**
+   * Paged so an admin's browser never has to hold the whole user table in
+   * memory at once - a growing student body would otherwise make this
+   * endpoint (and the table rendering it) slower every semester.
+   */
+  async adminUsers(query: {
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    verified?: boolean;
+  }) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const search = query.q?.trim();
+
+    const where: Prisma.UserWhereInput = {
+      role: 'USER',
+      ...(search
+        ? {
+            OR: [
+              { displayName: { contains: search, mode: 'insensitive' } },
+              { email: { contains: search, mode: 'insensitive' } },
+              { sutId: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...(query.verified === false
+        ? { verification: { isNot: { status: 'VERIFIED' } } }
+        : {}),
+      ...(query.verified === true
+        ? { verification: { status: 'VERIFIED' } }
+        : {}),
+    };
+
+    const [items, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        include: {
+          _count: { select: { reportsReceived: true } },
+          verification: true,
+          profile: { select: { major: true, year: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return { items, total, page, pageSize };
   }
 
   /**
@@ -1256,14 +1296,46 @@ export class FeaturesService {
     return verification;
   }
 
-  reports() {
-    return this.prisma.report.findMany({
-      include: {
-        reporter: { select: { id: true, displayName: true } },
-        reported: { select: { id: true, displayName: true, email: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+  async reports(query: { page?: number; pageSize?: number; q?: string }) {
+    const page = query.page ?? 1;
+    const pageSize = query.pageSize ?? 20;
+    const search = query.q?.trim();
+
+    const where: Prisma.ReportWhereInput = search
+      ? { reported: { displayName: { contains: search, mode: 'insensitive' } } }
+      : {};
+
+    const [items, total] = await Promise.all([
+      this.prisma.report.findMany({
+        where,
+        include: {
+          reporter: { select: { id: true, displayName: true } },
+          reported: { select: { id: true, displayName: true, email: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.report.count({ where }),
+    ]);
+
+    return { items, total, page, pageSize };
+  }
+
+  /** Summary counters for the Report screen's cards - unaffected by paging. */
+  async reportSummary() {
+    const [total, pending, byReason] = await Promise.all([
+      this.prisma.report.count(),
+      this.prisma.report.count({ where: { status: 'PENDING' } }),
+      this.prisma.report.groupBy({ by: ['reason'], _count: { _all: true } }),
+    ]);
+    return {
+      total,
+      pending,
+      byReason: byReason
+        .map((r) => ({ reason: r.reason, count: r._count._all }))
+        .sort((a, b) => b.count - a.count),
+    };
   }
 
   async resolveReport(id: string, status: 'RESOLVED' | 'DISMISSED') {

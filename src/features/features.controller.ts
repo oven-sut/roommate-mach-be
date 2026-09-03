@@ -19,6 +19,7 @@ import { FeaturesService } from './features.service';
 import { UpdateMeDto } from './dto/update-me.dto';
 import { ProfileDto } from './dto/profile.dto';
 import { DiscoverQueryDto } from './dto/discover-query.dto';
+import { AdminListQueryDto } from './dto/admin-list-query.dto';
 import {
   AdminConfigDto,
   AvatarDto,
@@ -259,9 +260,9 @@ export class FeaturesController {
   }
 
   @Get('admin/users')
-  users(@Req() r: AuthReq) {
+  users(@Req() r: AuthReq, @Query() query: AdminListQueryDto) {
     this.f.ensureAdmin(r.user);
-    return this.f.adminUsers();
+    return this.f.adminUsers(query);
   }
 
   @Get('admin/analytics')
@@ -291,9 +292,15 @@ export class FeaturesController {
   }
 
   @Get('admin/reports')
-  reports(@Req() r: AuthReq) {
+  reports(@Req() r: AuthReq, @Query() query: AdminListQueryDto) {
     this.f.ensureAdmin(r.user);
-    return this.f.reports();
+    return this.f.reports(query);
+  }
+
+  @Get('admin/reports/summary')
+  reportSummary(@Req() r: AuthReq) {
+    this.f.ensureAdmin(r.user);
+    return this.f.reportSummary();
   }
 
   @Patch('admin/reports/:id')
