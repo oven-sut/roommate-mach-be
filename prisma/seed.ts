@@ -27,62 +27,101 @@ const SAMPLE_ANSWERS: Record<string, Record<string, string[][]>> = {
   },
 };
 
-const SAMPLE_STUDENTS = [
-  {
-    email: 'demo.owl@g.sut.ac.th',
-    sutId: 'b6600001',
-    displayName: 'Nut Chaiyaphum',
-    answers: 'owl' as const,
-    profile: {
-      age: 20,
-      year: 2,
-      gender: 'Male',
-      major: 'Computer Engineering',
-      bio: 'Night-shift coder. Headphones on by 23:00, quiet by default.',
-      roomType: 'Double',
-      roommateGender: 'Same gender',
-      zone: 'Gate 1',
-      budgetMin: 3000,
-      budgetMax: 5000,
-    },
-  },
-  {
-    email: 'demo.lark@g.sut.ac.th',
-    sutId: 'b6600002',
-    displayName: 'Ploy Siriwan',
-    answers: 'lark' as const,
-    profile: {
-      age: 21,
-      year: 3,
-      gender: 'Female',
-      major: 'Nursing',
-      bio: 'Up at six for clinicals. I like a tidy room and an early night.',
-      roomType: 'Single',
-      roommateGender: 'Same gender',
-      zone: 'Gate 3',
-      budgetMin: 3500,
-      budgetMax: 6000,
-    },
-  },
-  {
-    email: 'demo.balanced@g.sut.ac.th',
-    sutId: 'b6600003',
-    displayName: 'Kan Thongchai',
-    answers: 'balanced' as const,
-    profile: {
-      age: 20,
-      year: 2,
-      gender: 'Male',
-      major: 'Mechanical Engineering',
-      bio: 'Easy to live with. Happy to split chores on a schedule.',
-      roomType: 'Double',
-      roommateGender: 'Any',
-      zone: 'Gate 1',
-      budgetMin: 3000,
-      budgetMax: 5500,
-    },
-  },
+const FIRST_NAMES_M = [
+  'Nut', 'Kan', 'Ton', 'Best', 'Game', 'Pete', 'Boss', 'Film', 'Mark', 'Aek',
+  'Time', 'New', 'Bank', 'First', 'Ohm', 'Guy', 'Tar', 'Non', 'Frame', 'Job',
 ];
+const FIRST_NAMES_F = [
+  'Ploy', 'Fah', 'Bow', 'Milk', 'Nan', 'Ice', 'Gift', 'Prim', 'Fon', 'Mint',
+  'Nim', 'Am', 'Ning', 'Ying', 'Waan', 'Pang', 'Kwan', 'Beam', 'Jane', 'Namtan',
+];
+const LAST_NAMES = [
+  'Chaiyaphum', 'Siriwan', 'Thongchai', 'Suksawat', 'Wongsa', 'Ruangrit',
+  'Boonmee', 'Chareonsuk', 'Kittisak', 'Pattana', 'Saelee', 'Wattana',
+  'Prasert', 'Rattanakosin', 'Intharawut', 'Sombat', 'Chaiwong', 'Aphaiwong',
+  'Detsakul', 'Manorom',
+];
+const MAJORS = [
+  'Computer Engineering', 'Nursing', 'Mechanical Engineering',
+  'Information Technology', 'Civil Engineering', 'Biotechnology',
+  'Business Administration', 'Environmental Engineering', 'Physical Therapy',
+  'Electrical Engineering', 'Food Technology', 'Architecture',
+  'Public Health', 'Metallurgical Engineering', 'Agricultural Technology',
+];
+const ZONES = ['Gate 1', 'Gate 2', 'Gate 3', 'Gate 4', 'Suranaree Zone', 'Off-campus'];
+const ROOM_TYPES = ['Single', 'Double', 'Shared'];
+const PROPERTY_TYPES = ['On-campus', 'Off-campus', 'Condo'];
+const ROOMMATE_GENDERS = ['Same gender', 'Any'];
+const BIOS = [
+  'Night-shift coder. Headphones on by 23:00, quiet by default.',
+  'Up at six for clinicals. I like a tidy room and an early night.',
+  'Easy to live with. Happy to split chores on a schedule.',
+  'Gym in the morning, library at night. Low drama, high fives.',
+  'Plant parent, coffee addict, always down for a movie night.',
+  'Studying hard, sleeping harder. Please knock before entering.',
+  'Cooks a lot, cleans as I go. Looking for someone chill.',
+  'Gamer by night, still make it to 8am classes somehow.',
+  'Love a clean common area. Not a neat freak, just tidy.',
+  'Music practice a few evenings a week, otherwise very quiet.',
+];
+const ANSWER_STYLES = ['owl', 'lark', 'balanced'] as const;
+
+function pick<T>(arr: T[], seed: number): T {
+  return arr[seed % arr.length];
+}
+
+const DEMO_STUDENT_COUNT = 40;
+
+const SAMPLE_STUDENTS = Array.from({ length: DEMO_STUDENT_COUNT }, (_, i) => {
+  const isMale = i % 2 === 0;
+  const first = pick(isMale ? FIRST_NAMES_M : FIRST_NAMES_F, i);
+  const last = pick(LAST_NAMES, i + 3);
+  const answers = pick([...ANSWER_STYLES], i);
+  const n = i + 1;
+  return {
+    email: `demo.student${n}@g.sut.ac.th`,
+    sutId: `b66${String(10000 + n).padStart(5, '0')}`,
+    displayName: `${first} ${last}`,
+    answers,
+    profile: {
+      age: 19 + (i % 5),
+      year: 1 + (i % 4),
+      gender: isMale ? 'Male' : 'Female',
+      major: pick(MAJORS, i),
+      bio: pick(BIOS, i),
+      roomType: pick(ROOM_TYPES, i),
+      propertyType: pick(PROPERTY_TYPES, i + 1),
+      roommateGender: pick(ROOMMATE_GENDERS, i),
+      zone: pick(ZONES, i),
+      budgetMin: 2500 + (i % 6) * 500,
+      budgetMax: 4500 + (i % 8) * 500,
+    },
+  };
+});
+
+/**
+ * Fixed, well-known login for manual testing: demo.login@g.sut.ac.th /
+ * password from SEED_DEMO_PASSWORD (default demo-password-123).
+ */
+SAMPLE_STUDENTS.unshift({
+  email: 'demo.login@g.sut.ac.th',
+  sutId: 'b6600000',
+  displayName: 'Demo Login',
+  answers: 'balanced',
+  profile: {
+    age: 21,
+    year: 3,
+    gender: 'Male',
+    major: 'Computer Engineering',
+    bio: 'The account you use to log in and poke around the app.',
+    roomType: 'Double',
+    propertyType: 'On-campus',
+    roommateGender: 'Any',
+    zone: 'Gate 1',
+    budgetMin: 3000,
+    budgetMax: 5500,
+  },
+});
 
 /** Questions and groups the questionnaire hangs off. Safe to re-run. */
 async function seedQuestions() {
@@ -189,6 +228,7 @@ async function seedDemoUsers() {
   console.log(
     `Seeded ${SAMPLE_STUDENTS.length} demo students (password: ${password})`,
   );
+  console.log('Login with: demo.login@g.sut.ac.th / ' + password);
 }
 
 /** Promotes ADMIN_EMAIL if that account already exists. */

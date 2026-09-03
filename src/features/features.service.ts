@@ -1093,23 +1093,102 @@ export class FeaturesService {
       this.prisma.match.count({ where: { status: 'ACTIVE' } }),
       this.prisma.message.count(),
       this.prisma.report.count({ where: { status: 'PENDING' } }),
-    ]).then(([members, active, matches, messages, reports]) => ({
-      members,
-      active,
-      matches,
-      messages,
-      reports,
-    }));
+      this.prisma.match.count({ where: { status: 'UNMATCHED' } }),
+      this.prisma.verification.count({ where: { status: 'PENDING' } }),
+      this.prisma.swipe.count(),
+      this.prisma.conversation.count(),
+    ]).then(
+      ([
+        members,
+        active,
+        matches,
+        messages,
+        reports,
+        unmatched,
+        pendingVerifications,
+        swipes,
+        conversations,
+      ]) => ({
+        members,
+        active,
+        matches,
+        messages,
+        reports,
+        unmatched,
+        pendingVerifications,
+        swipes,
+        conversations,
+      }),
+    );
   }
 
   adminUsers() {
     return this.prisma.user.findMany({
+      where: { role: 'USER' },
       include: {
         _count: { select: { reportsReceived: true } },
         verification: true,
+        profile: { select: { major: true, year: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  /**
+   * Aggregates for the Analytics screen. Year and faculty distributions come
+   * straight from `Profile`; the swipe funnel from the swipe/match/message
+   * pipeline; lifestyle weighting from the admin-configured match weights, so
+   * every number here reflects real rows rather than placeholder data.
+   */
+  async analytics() {
+    const [
+      profiles,
+      swipes,
+      matches,
+      conversationsWithMessages,
+      weights,
+      reportsByReason,
+    ] = await Promise.all([
+      this.prisma.profile.findMany({
+        select: { year: true, major: true },
+      }),
+      this.prisma.swipe.count(),
+      this.prisma.match.count(),
+      this.prisma.conversation.count({
+        where: { messages: { some: {} } },
+      }),
+      this.settings.matchWeights(),
+      this.prisma.report.groupBy({
+        by: ['reason'],
+        _count: { _all: true },
+      }),
+    ]);
+
+    const byYear = new Map<number, number>();
+    const byMajor = new Map<string, number>();
+    for (const p of profiles) {
+      if (p.year != null) byYear.set(p.year, (byYear.get(p.year) ?? 0) + 1);
+      if (p.major) byMajor.set(p.major, (byMajor.get(p.major) ?? 0) + 1);
+    }
+
+    return {
+      yearDistribution: [...byYear.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([year, count]) => ({ year, count })),
+      facultyDistribution: [...byMajor.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([major, count]) => ({ major, count })),
+      swipeFunnel: {
+        swiped: swipes,
+        matched: matches,
+        talking: conversationsWithMessages,
+      },
+      lifestyleWeights: weights,
+      reportsByReason: reportsByReason.map((r) => ({
+        reason: r.reason,
+        count: r._count._all,
+      })),
+    };
   }
 
   async suspend(id: string, suspended: boolean) {

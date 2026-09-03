@@ -264,6 +264,12 @@ export class FeaturesController {
     return this.f.adminUsers();
   }
 
+  @Get('admin/analytics')
+  analytics(@Req() r: AuthReq) {
+    this.f.ensureAdmin(r.user);
+    return this.f.analytics();
+  }
+
   @Patch('admin/users/:id/suspend')
   suspend(
     @Req() r: AuthReq,
