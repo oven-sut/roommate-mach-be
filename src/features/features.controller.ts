@@ -291,6 +291,22 @@ export class FeaturesController {
     return this.f.verify(id, b.status, b.note);
   }
 
+  @Get('admin/verifications')
+  adminVerifications(@Req() r: AuthReq) {
+    this.f.ensureAdmin(r.user);
+    return this.f.adminVerifications();
+  }
+
+  @Patch('admin/verifications/:id')
+  verifyVerification(
+    @Req() r: AuthReq,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() b: VerifyUserDto,
+  ) {
+    this.f.ensureAdmin(r.user);
+    return this.f.verify(id, b.status, b.note);
+  }
+
   @Get('admin/reports')
   reports(@Req() r: AuthReq, @Query() query: AdminListQueryDto) {
     this.f.ensureAdmin(r.user);

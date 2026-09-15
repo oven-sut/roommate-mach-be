@@ -5,27 +5,74 @@ import { DEFAULT_MATCH_WEIGHTS } from '../src/config/app-settings.service';
 
 const prisma = new PrismaClient();
 
-/** Answer payloads shaped exactly like the app's `toApiAnswers` output. */
-const SAMPLE_ANSWERS: Record<string, Record<string, string[][]>> = {
-  owl: {
-    q1: [['23:30–01:00'], ['09:00–10:30']],
-    q2: [['Organized chaos', 'Laundry piles up'], ['2/5']],
-    q3: [['yes'], ['Weekly'], ['6/month'], ['Close friends', 'Partner']],
-    q4: [['Just night'], ['23°'], ['3/8'], ['In room']],
-  },
-  lark: {
-    q1: [['21:30–22:30'], ['06:00–07:00']],
-    q2: [['Spotless', 'Dishes same day', 'Shoes off inside'], ['5/5']],
-    q3: [['no'], ['Monthly'], ['1/month'], ['Study group']],
-    q4: [['Anytime'], ['26°'], ['7/8'], ['Library']],
-  },
-  balanced: {
-    q1: [['22:30–23:30'], ['07:00–08:30']],
-    q2: [['Dishes same day', 'Weekly deep clean'], ['4/5']],
-    q3: [['sometime'], ['Monthly'], ['3/month'], ['Close friends']],
-    q4: [['Anytime'], ['25°'], ['5/8'], ['In room']],
-  },
-};
+const SLEEP_RANGES = [
+  '21:00–22:00',
+  '21:30–22:30',
+  '22:00–23:00',
+  '22:30–23:30',
+  '23:00–00:00',
+  '23:30–01:00',
+  '00:30–02:00',
+  '01:00–02:30',
+  '01:30–03:00',
+];
+const WAKE_RANGES = [
+  '05:30–06:30',
+  '06:00–07:00',
+  '06:30–07:30',
+  '07:00–08:00',
+  '07:30–08:30',
+  '08:00–09:00',
+  '08:30–09:30',
+  '09:00–10:30',
+  '10:00–11:30',
+];
+const CLEAN_HABIT_POOL = [
+  ['Spotless', 'Dishes same day', 'Shoes off inside'],
+  ['Weekly deep clean', 'Dishes same day'],
+  ['Organized chaos', 'Laundry piles up'],
+  ['Tidy-ish', 'Shared chore chart'],
+  ['Dishes same day', 'Shoes off inside', 'Weekly deep clean'],
+];
+const CLEAN_SCORES = ['1/5', '2/5', '3/5', '4/5', '5/5'];
+const OVERNIGHT_OPTS = ['yes', 'no', 'sometime'];
+const FREQ_OPTS = ['never', 'Monthly', 'Weekly', 'anytime'];
+const GUEST_TYPES_POOL = [
+  ['Study group'],
+  ['Close friends', 'Partner'],
+  ['Close friends', 'Family'],
+  ['Anyone'],
+  ['No one'],
+];
+const AC_TIMINGS = ['Just day', 'Just night', 'Anytime', 'All time'];
+const AC_TEMPS = ['22°', '23°', '24°', '25°', '26°', '27°'];
+const QUIET_SCORES = ['1/8', '2/8', '3/8', '4/8', '5/8', '6/8', '7/8', '8/8'];
+const STUDY_PLACES = ['In room', 'Library', 'Cafe / out', 'Co-working space'];
+
+function generateAnswersFor(i: number): Record<string, string[][]> {
+  return {
+    q1: [
+      [SLEEP_RANGES[i % SLEEP_RANGES.length]],
+      [WAKE_RANGES[(i * 3 + 1) % WAKE_RANGES.length]],
+    ],
+    q2: [
+      CLEAN_HABIT_POOL[i % CLEAN_HABIT_POOL.length],
+      [CLEAN_SCORES[(i * 2 + 1) % CLEAN_SCORES.length]],
+    ],
+    q3: [
+      [OVERNIGHT_OPTS[i % OVERNIGHT_OPTS.length]],
+      [FREQ_OPTS[(i * 2) % FREQ_OPTS.length]],
+      [`${(i % 5) + 1}/month`],
+      GUEST_TYPES_POOL[i % GUEST_TYPES_POOL.length],
+    ],
+    q4: [
+      [AC_TIMINGS[i % AC_TIMINGS.length]],
+      [AC_TEMPS[(i * 3) % AC_TEMPS.length]],
+      [QUIET_SCORES[(i * 2 + 3) % QUIET_SCORES.length]],
+      [STUDY_PLACES[i % STUDY_PLACES.length]],
+    ],
+  };
+}
 
 const FIRST_NAMES_M = [
   'Nut', 'Kan', 'Ton', 'Best', 'Game', 'Pete', 'Boss', 'Film', 'Mark', 'Aek',
@@ -191,7 +238,8 @@ async function seedDemoUsers() {
   const password = process.env.SEED_DEMO_PASSWORD ?? 'demo-password-123';
   const passwordHash = await hash(password, 12);
 
-  for (const student of SAMPLE_STUDENTS) {
+  for (let i = 0; i < SAMPLE_STUDENTS.length; i++) {
+    const student = SAMPLE_STUDENTS[i];
     const user = await prisma.user.upsert({
       where: { email: student.email },
       create: {
@@ -209,7 +257,7 @@ async function seedDemoUsers() {
       update: { ...student.profile, completed: true },
     });
 
-    const answers = SAMPLE_ANSWERS[student.answers];
+    const answers = generateAnswersFor(i);
     for (const question of QUESTION_DEFINITIONS) {
       await prisma.answer.upsert({
         where: {

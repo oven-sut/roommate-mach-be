@@ -140,7 +140,8 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({
-      where: { email: dto.email },
+      where: { email: dto.email.toLowerCase().trim() },
+      include: { profile: true },
     });
 
     if (
@@ -158,6 +159,7 @@ export class AuthService {
         ? await this.prisma.user.update({
             where: { id: user.id },
             data: { role: 'ADMIN' },
+            include: { profile: true },
           })
         : user;
     return this.buildAuthResponse({
@@ -166,6 +168,7 @@ export class AuthService {
       email: authenticatedUser.email,
       role: authenticatedUser.role,
       createdAt: authenticatedUser.createdAt,
+      profile: authenticatedUser.profile,
     });
   }
 
@@ -288,12 +291,18 @@ export class AuthService {
     if (user.suspended)
       throw new UnauthorizedException('This account is suspended');
 
+    const fullUser = await this.prisma.user.findUnique({
+      where: { id: user.id },
+      include: { profile: true },
+    });
+
     return this.buildAuthResponse({
       id: user.id,
       displayName: user.displayName,
       email: user.email,
       role: user.role,
       createdAt: user.createdAt,
+      profile: fullUser?.profile ?? null,
     });
   }
 
@@ -303,6 +312,7 @@ export class AuthService {
     email: string;
     role: string;
     createdAt: Date;
+    profile?: any;
   }) {
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
