@@ -111,7 +111,7 @@ describe('OtpService', () => {
   });
 
   it('stores only a hash of the code, never the code itself', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     const row = table.rows.get(EMAIL)!;
 
     expect(row.codeHash).toBe(createHash('sha256').update(code).digest('hex'));
@@ -119,7 +119,7 @@ describe('OtpService', () => {
   });
 
   it('accepts the code it issued and marks the address verified', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
 
     await expect(service.verify(EMAIL, code)).resolves.toEqual({
       verified: true,
@@ -129,7 +129,7 @@ describe('OtpService', () => {
   });
 
   it('is case- and whitespace-insensitive about the address', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     await expect(
       service.verify('  Student@G.SUT.ac.th ', code),
     ).resolves.toMatchObject({ verified: true });
@@ -145,7 +145,7 @@ describe('OtpService', () => {
   });
 
   it('burns the code after too many wrong guesses', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     for (let i = 0; i < 5; i++) {
       await expect(service.verify(EMAIL, '000000')).rejects.toThrow();
     }
@@ -157,7 +157,7 @@ describe('OtpService', () => {
   });
 
   it('rejects an expired code', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     table.rows.get(EMAIL)!.expiresAt = new Date(Date.now() - 1000);
 
     await expect(service.verify(EMAIL, code)).rejects.toThrow(
@@ -166,7 +166,7 @@ describe('OtpService', () => {
   });
 
   it('will not let one code be spent twice', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     await service.verify(EMAIL, code);
     await service.consumeVerification(EMAIL);
 
@@ -177,7 +177,7 @@ describe('OtpService', () => {
   });
 
   it('treats a stale verification window as unverified', async () => {
-    const code = await service.issue(EMAIL);
+    const code = (await service.issue(EMAIL))!;
     await service.verify(EMAIL, code);
     table.rows.get(EMAIL)!.verifiedUntil = new Date(Date.now() - 1000);
 
@@ -190,10 +190,10 @@ describe('OtpService', () => {
   });
 
   it('resends once the cooldown has passed, invalidating the old code', async () => {
-    const first = await service.issue(EMAIL);
+    const first = (await service.issue(EMAIL))!;
     // Past the cooldown, still inside the hourly window.
     table.rows.get(EMAIL)!.lastSentAt = new Date(Date.now() - 90_000);
-    const second = await service.issue(EMAIL);
+    const second = (await service.issue(EMAIL))!;
 
     expect(second).not.toBe(first);
     await expect(service.verify(EMAIL, first)).rejects.toThrow();
