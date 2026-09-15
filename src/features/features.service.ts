@@ -1271,15 +1271,9 @@ export class FeaturesService {
 
     const verification = await this.prisma.verification.upsert({
       where: { userId: id },
-      create: { userId: id, status, note, documentUrl: null },
-      update: { status, note, documentUrl: null },
+      create: { userId: id, status, note },
+      update: { status, note },
     });
-
-    // The document has served its purpose; holding student ID scans after a
-    // decision is data we do not need.
-    if (existing?.documentUrl) {
-      await this.storage.deleteFile(existing.documentUrl);
-    }
 
     await this.notifications.notify({
       userId: id,
@@ -1294,6 +1288,32 @@ export class FeaturesService {
     });
 
     return verification;
+  }
+
+  async adminVerifications() {
+    const list = await this.prisma.verification.findMany({
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            sutId: true,
+            displayName: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return list.map((v) => ({
+      id: v.userId,
+      sutId: v.user?.sutId ?? '—',
+      displayName: v.user?.displayName ?? '—',
+      email: v.user?.email ?? '—',
+      documentUrl: v.documentUrl,
+      status: v.status,
+      createdAt: v.updatedAt.toISOString(),
+    }));
   }
 
   async reports(query: { page?: number; pageSize?: number; q?: string }) {

@@ -558,16 +558,14 @@ describe('FeaturesService', () => {
       );
     });
 
-    it('deletes the stored document once a decision is made', async () => {
+    it('retains the stored document when a decision is made', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: OTHER });
       prisma.verification.findUnique.mockResolvedValue({
         documentUrl: 'http://minio/roommate-match/verifications/a.jpg',
       });
 
       await service.verify(OTHER, 'REJECTED', 'Unreadable photo');
-      expect(storage.deleteFile).toHaveBeenCalledWith(
-        'http://minio/roommate-match/verifications/a.jpg',
-      );
+      expect(storage.deleteFile).not.toHaveBeenCalled();
     });
 
     it('404s for a user who does not exist', async () => {
