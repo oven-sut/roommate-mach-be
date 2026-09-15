@@ -120,6 +120,7 @@ export class OtpService {
     }
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
+    this.logger.warn(`🔑 [OTP CODE] Verification code for ${cleanEmail} is: ${code}`);
     await this.recordSend(cleanEmail, now, windowOpen, code);
     return code;
   }
