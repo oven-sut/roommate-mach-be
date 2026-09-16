@@ -37,6 +37,50 @@ const DISCOVER_PAGE_SIZE = 30;
 const MAX_PHOTOS = 6;
 const MESSAGE_PAGE_SIZE = 50;
 
+/**
+ * Report.reason is free text chosen from the report form's options, not an
+ * enum, so the admin dashboard's safety chart buckets it by keyword instead.
+ */
+function classifyReportReason(reason: string): 'profile' | 'harassment' | 'spam' {
+  const r = reason.toLowerCase();
+  if (
+    r.includes('โปรไฟล์') ||
+    r.includes('ปลอม') ||
+    r.includes('profile') ||
+    r.includes('fake')
+  )
+    return 'profile';
+  if (r.includes('ก่อกวน') || r.includes('ข่มขู่') || r.includes('harassment'))
+    return 'harassment';
+  return 'spam';
+}
+
+/** Builds the 5-month report trend the admin dashboard's safety chart shows. */
+function buildReportTrend(
+  reports: { reason: string; createdAt: Date }[],
+  now: Date,
+) {
+  const months = Array.from({ length: 5 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() - (4 - i), 1);
+    return {
+      monthIndex: d.getMonth(),
+      year: d.getFullYear(),
+      profile: 0,
+      harassment: 0,
+      spam: 0,
+    };
+  });
+  for (const report of reports) {
+    const bucket = months.find(
+      (m) =>
+        m.monthIndex === report.createdAt.getMonth() &&
+        m.year === report.createdAt.getFullYear(),
+    );
+    if (bucket) bucket[classifyReportReason(report.reason)]++;
+  }
+  return months;
+}
+
 @Injectable()
 export class FeaturesService {
   private readonly logger = new Logger(FeaturesService.name);
@@ -1128,8 +1172,24 @@ export class FeaturesService {
     if (user.role !== Role.ADMIN) throw new ForbiddenException('Admin only');
   }
 
-  dashboard() {
-    return Promise.all([
+  async dashboard() {
+    const now = new Date();
+    const [
+      members,
+      active,
+      matches,
+      messages,
+      reports,
+      unmatched,
+      pendingVerifications,
+      verifiedVerifications,
+      unverifiedVerifications,
+      swipes,
+      likes,
+      conversations,
+      recentReports,
+      hourRows,
+    ] = await Promise.all([
       this.prisma.user.count({ where: { role: 'USER' } }),
       this.prisma.user.count({ where: { role: 'USER', suspended: false } }),
       this.prisma.match.count({ where: { status: 'ACTIVE' } }),
@@ -1137,31 +1197,50 @@ export class FeaturesService {
       this.prisma.report.count({ where: { status: 'PENDING' } }),
       this.prisma.match.count({ where: { status: 'UNMATCHED' } }),
       this.prisma.verification.count({ where: { status: 'PENDING' } }),
-      this.prisma.swipe.count(),
-      this.prisma.conversation.count(),
-    ]).then(
-      ([
-        members,
-        active,
-        matches,
-        messages,
-        reports,
-        unmatched,
-        pendingVerifications,
-        swipes,
-        conversations,
-      ]) => ({
-        members,
-        active,
-        matches,
-        messages,
-        reports,
-        unmatched,
-        pendingVerifications,
-        swipes,
-        conversations,
+      this.prisma.verification.count({ where: { status: 'VERIFIED' } }),
+      this.prisma.user.count({
+        where: {
+          role: 'USER',
+          OR: [{ verification: null }, { verification: { status: 'REJECTED' } }],
+        },
       }),
-    );
+      this.prisma.swipe.count(),
+      this.prisma.swipe.count({ where: { decision: SwipeDecision.LIKE } }),
+      this.prisma.conversation.count(),
+      this.prisma.report.findMany({
+        where: {
+          createdAt: { gte: new Date(now.getFullYear(), now.getMonth() - 4, 1) },
+        },
+        select: { reason: true, createdAt: true },
+      }),
+      this.prisma.$queryRaw<{ hour: number; count: bigint }[]>`
+        SELECT EXTRACT(HOUR FROM "createdAt")::int AS hour, COUNT(*)::bigint AS count
+        FROM "Message"
+        GROUP BY hour
+      `,
+    ]);
+
+    const activityByHour = Array.from({ length: 24 }, (_, hour) => {
+      const row = hourRows.find((r) => Number(r.hour) === hour);
+      return row ? Number(row.count) : 0;
+    });
+
+    return {
+      members,
+      active,
+      matches,
+      messages,
+      reports,
+      unmatched,
+      pendingVerifications,
+      verifiedVerifications,
+      unverifiedVerifications,
+      swipes,
+      likes,
+      conversations,
+      reportTrend: buildReportTrend(recentReports, now),
+      activityByHour,
+    };
   }
 
   /**
