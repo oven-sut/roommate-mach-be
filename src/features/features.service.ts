@@ -1594,8 +1594,10 @@ export class FeaturesService {
       this.prisma.report.findMany({
         where,
         include: {
-          reporter: { select: { id: true, displayName: true } },
-          reported: { select: { id: true, displayName: true, email: true } },
+          reporter: { select: { id: true, displayName: true, email: true } },
+          reported: {
+            select: { id: true, displayName: true, email: true, suspended: true },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
