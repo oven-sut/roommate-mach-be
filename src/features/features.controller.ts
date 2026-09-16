@@ -281,6 +281,24 @@ export class FeaturesController {
     return this.f.suspend(id, b.suspended);
   }
 
+  @Post('admin/users/:id/reset-password')
+  adminResetPassword(@Req() r: AuthReq, @Param('id', ParseUUIDPipe) id: string) {
+    this.f.ensureAdmin(r.user);
+    return this.f.adminResetPassword(id);
+  }
+
+  @Delete('admin/users/:id')
+  adminDeleteUser(@Req() r: AuthReq, @Param('id', ParseUUIDPipe) id: string) {
+    this.f.ensureAdmin(r.user);
+    return this.f.adminDeleteUser(id);
+  }
+
+  @Get('admin/users/:id/activity')
+  userActivity(@Req() r: AuthReq, @Param('id', ParseUUIDPipe) id: string) {
+    this.f.ensureAdmin(r.user);
+    return this.f.userActivity(id);
+  }
+
   @Patch('admin/users/:id/verify')
   verify(
     @Req() r: AuthReq,

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, Role, SwipeDecision } from '@prisma/client';
 import { compare, hash } from 'bcryptjs';
+import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   AppSettingsService,
@@ -1409,6 +1410,115 @@ export class FeaturesService {
     });
 
     return updated;
+  }
+
+  /**
+   * Issues a fresh temporary password directly rather than emailing a reset
+   * link, since a suspended or locked-out student may not be checking mail —
+   * the admin relays the temporary password themselves.
+   */
+  async adminResetPassword(id: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const tempPassword = randomBytes(9).toString('base64url');
+    await this.prisma.user.update({
+      where: { id },
+      data: { passwordHash: await hash(tempPassword, 12) },
+    });
+
+    await this.notifications.notify({
+      userId: id,
+      type: 'system',
+      title: 'Password reset by admin',
+      body: 'An administrator reset your password. Contact the SUT Roommate team for your temporary password.',
+    });
+
+    return { tempPassword };
+  }
+
+  /** Hard-deletes a student account from the moderation screen. */
+  async adminDeleteUser(id: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, role: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    if (user.role === 'ADMIN')
+      throw new ForbiddenException('Cannot delete an admin account here');
+
+    await this.prisma.user.delete({ where: { id } });
+    return { success: true };
+  }
+
+  /**
+   * Moderation-facing activity summary for one student. Built entirely from
+   * existing rows (swipes, matches, messages, reports) rather than a separate
+   * audit log, so every number reflects real usage.
+   */
+  async userActivity(id: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        displayName: true,
+        email: true,
+        createdAt: true,
+        suspended: true,
+        verification: { select: { status: true } },
+      },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const [
+      swipesSent,
+      likesSent,
+      swipesReceived,
+      likesReceived,
+      matches,
+      messagesSent,
+      reportsMade,
+      reportsReceived,
+      recentReportsReceived,
+    ] = await Promise.all([
+      this.prisma.swipe.count({ where: { fromId: id } }),
+      this.prisma.swipe.count({ where: { fromId: id, decision: 'LIKE' } }),
+      this.prisma.swipe.count({ where: { toId: id } }),
+      this.prisma.swipe.count({ where: { toId: id, decision: 'LIKE' } }),
+      this.prisma.match.count({
+        where: { OR: [{ userAId: id }, { userBId: id }], status: 'ACTIVE' },
+      }),
+      this.prisma.message.count({ where: { senderId: id } }),
+      this.prisma.report.count({ where: { reporterId: id } }),
+      this.prisma.report.count({ where: { reportedId: id } }),
+      this.prisma.report.findMany({
+        where: { reportedId: id },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: { reason: true, status: true, createdAt: true },
+      }),
+    ]);
+
+    return {
+      id: user.id,
+      displayName: user.displayName,
+      email: user.email,
+      joinedAt: user.createdAt,
+      suspended: user.suspended,
+      verificationStatus: user.verification?.status ?? 'PENDING',
+      swipesSent,
+      likesSent,
+      swipesReceived,
+      likesReceived,
+      matches,
+      messagesSent,
+      reportsMade,
+      reportsReceived,
+      recentReportsReceived,
+    };
   }
 
   /** Approves or rejects a student's verification and tells them the outcome. */
