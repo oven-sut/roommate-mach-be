@@ -133,8 +133,8 @@ export class VerifyUserDto {
 }
 
 export class ResolveReportDto {
-  @IsIn(['RESOLVED', 'DISMISSED'])
-  status: 'RESOLVED' | 'DISMISSED';
+  @IsIn(['RESOLVED', 'DISMISSED', 'PENDING'])
+  status: 'RESOLVED' | 'DISMISSED' | 'PENDING';
 }
 
 export class MatchWeightsDto {

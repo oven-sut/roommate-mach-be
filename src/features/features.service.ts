@@ -17,6 +17,7 @@ import {
 } from '../config/app-settings.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { StorageService } from '../storage/storage.service';
+import { OtpService } from '../auth/otp.service';
 import {
   QUESTION_DEFINITIONS,
   QUESTION_KEYS,
@@ -37,6 +38,46 @@ const DISCOVER_PAGE_SIZE = 30;
 /** Most photos a profile can hold. */
 const MAX_PHOTOS = 6;
 const MESSAGE_PAGE_SIZE = 50;
+
+const MAJOR_THAI_MAP: Record<string, string> = {
+  'Computer Engineering': 'วิศวกรรมคอมพิวเตอร์',
+  'Chemical Engineering': 'วิศวกรรมเคมี',
+  'Civil Engineering': 'วิศวกรรมโยธา',
+  'Electrical Engineering': 'วิศวกรรมไฟฟ้า',
+  'Mechanical Engineering': 'วิศวกรรมเครื่องกล',
+  'Industrial Engineering': 'วิศวกรรมอุตสาหการ',
+  'Environmental Engineering': 'วิศวกรรมสิ่งแวดล้อม',
+  'Telecommunication Engineering': 'วิศวกรรมโทรคมนาคม',
+  'Logistics Engineering': 'วิศวกรรมขนส่งและโลจิสติกส์',
+  'Agricultural & Food Eng.': 'วิศวกรรมเกษตรและอาหาร',
+  'Agricultural and Food Engineering': 'วิศวกรรมเกษตรและอาหาร',
+  'Information Technology': 'เทคโนโลยีสารสนเทศ',
+  'Management Technology': 'เทคโนโลยีการจัดการ',
+  'Information Technology Management': 'เทคโนโลยีการจัดการ',
+  'การจัดการเทคโนโลยีสารสนเทศ': 'เทคโนโลยีการจัดการ',
+  'Computer Science': 'วิทยาการคอมพิวเตอร์',
+  'Medicine': 'แพทยศาสตร์',
+  'Nursing': 'พยาบาลศาสตร์',
+  'Dentistry': 'ทันตแพทยศาสตร์',
+  'Public Health': 'สาธารณสุขศาสตร์',
+  'Agricultural Technology': 'เทคโนโลยีการเกษตร',
+  'Food Technology': 'เทคโนโลยีอาหาร',
+  'Digital Communication': 'นิเทศศาสตร์ดิจิทัล',
+  'Digital Technology': 'เทคโนโลยีดิจิทัล',
+  'Business Administration': 'บริหารธุรกิจ / บัญชี',
+  'Business / Accounting': 'บริหารธุรกิจ / บัญชี',
+  'Business': 'บริหารธุรกิจ / บัญชี',
+  'Architecture': 'สถาปัตยกรรมศาสตร์',
+  'Physical Therapy': 'กายภาพบำบัด',
+  'Metallurgical Engineering': 'วิศวกรรมโลหการ',
+  'Biotechnology': 'เทคโนโลยีชีวภาพ',
+};
+
+function normalizeMajorToThai(major: string): string {
+  if (!major) return 'ไม่ระบุสาขา';
+  const trimmed = major.trim();
+  return MAJOR_THAI_MAP[trimmed] ?? trimmed;
+}
 
 /**
  * Report.reason is free text chosen from the report form's options, not an
@@ -91,6 +132,7 @@ export class FeaturesService {
     private storage: StorageService,
     private settings: AppSettingsService,
     private notifications: NotificationsService,
+    private otpService: OtpService,
   ) {}
 
   private async processPhotos(
@@ -1145,7 +1187,7 @@ export class FeaturesService {
       if (!currentPassword)
         throw new BadRequestException('Current password is required');
       if (!(await compare(currentPassword, user.passwordHash)))
-        throw new UnauthorizedException('Current password is incorrect');
+        throw new BadRequestException('Current password is incorrect');
     }
 
     return this.prisma.user.update({
@@ -1296,6 +1338,8 @@ export class FeaturesService {
     return { items, total, page, pageSize };
   }
 
+
+
   /**
    * Aggregates for the Analytics screen. Matched ratio comes from active
    * matches vs. total members; year/faculty distributions from `Profile`;
@@ -1333,7 +1377,10 @@ export class FeaturesService {
     const byMajor = new Map<string, number>();
     for (const p of profiles) {
       if (p.year != null) byYear.set(p.year, (byYear.get(p.year) ?? 0) + 1);
-      if (p.major) byMajor.set(p.major, (byMajor.get(p.major) ?? 0) + 1);
+      if (p.major) {
+        const thaiMajor = normalizeMajorToThai(p.major);
+        byMajor.set(thaiMajor, (byMajor.get(thaiMajor) ?? 0) + 1);
+      }
     }
     const totalWithYear = [...byYear.values()].reduce((a, b) => a + b, 0);
 
@@ -1420,7 +1467,7 @@ export class FeaturesService {
   async adminResetPassword(id: string) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, email: true },
     });
     if (!user) throw new NotFoundException('User not found');
 
@@ -1430,14 +1477,17 @@ export class FeaturesService {
       data: { passwordHash: await hash(tempPassword, 12) },
     });
 
+    const code = await this.otpService.issue(user.email);
+    await this.otpService.deliver(user.email, code);
+
     await this.notifications.notify({
       userId: id,
       type: 'system',
       title: 'Password reset by admin',
-      body: 'An administrator reset your password. Contact the SUT Roommate team for your temporary password.',
+      body: 'An administrator reset your password. An OTP code and reset instructions were sent to your email.',
     });
 
-    return { tempPassword };
+    return { tempPassword, code: this.otpService.echo(code) };
   }
 
   /** Hard-deletes a student account from the moderation screen. */
@@ -1629,7 +1679,7 @@ export class FeaturesService {
     };
   }
 
-  async resolveReport(id: string, status: 'RESOLVED' | 'DISMISSED') {
+  async resolveReport(id: string, status: 'RESOLVED' | 'DISMISSED' | 'PENDING') {
     const report = await this.prisma.report.findUnique({ where: { id } });
     if (!report) throw new NotFoundException('Report not found');
     return this.prisma.report.update({ where: { id }, data: { status } });

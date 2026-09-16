@@ -92,6 +92,7 @@ export class OtpService {
     const now = new Date();
 
     if (
+      !this.devOtpAllowed &&
       existing &&
       now.getTime() - existing.lastSentAt.getTime() < RESEND_COOLDOWN_MS
     ) {
@@ -104,7 +105,7 @@ export class OtpService {
       existing != null &&
       now.getTime() - existing.windowStartedAt.getTime() < SEND_WINDOW_MS;
 
-    if (windowOpen && existing.sendsInWindow >= MAX_SENDS_PER_WINDOW) {
+    if (!this.devOtpAllowed && windowOpen && existing.sendsInWindow >= MAX_SENDS_PER_WINDOW) {
       throw new BadRequestException(
         'Too many codes requested for this email. Please try again later.',
       );
@@ -120,7 +121,6 @@ export class OtpService {
     }
 
     const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-    this.logger.warn(`🔑 [OTP CODE] Verification code for ${cleanEmail} is: ${code}`);
     await this.recordSend(cleanEmail, now, windowOpen, code);
     return code;
   }
@@ -250,9 +250,17 @@ export class OtpService {
   async deliver(email: string, code: string | null) {
     if (code === null) return;
 
+    this.logger.warn(
+      `\n┌──────────────────────────────────────────────────────────┐` +
+      `\n│                   📨 [SIMULATED EMAIL LOG]               │` +
+      `\n│ To:      ${email.padEnd(47)} │` +
+      `\n│ Subject: Roommate Match - OTP Verification Code          │` +
+      `\n│ Code:    ${code.padEnd(47)} │` +
+      `\n└──────────────────────────────────────────────────────────┘`,
+    );
+
     const apiKey = process.env.RESEND_API_KEY;
     if (!apiKey) {
-      this.logger.log(`[OTP] code for ${email} is ${code}`);
       return;
     }
 

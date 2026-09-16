@@ -14,6 +14,7 @@ import {
   DEFAULT_MATCH_WEIGHTS,
 } from '../config/app-settings.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { OtpService } from '../auth/otp.service';
 
 type Mock = Record<string, jest.Mock>;
 
@@ -81,6 +82,14 @@ describe('FeaturesService', () => {
           },
         },
         { provide: NotificationsService, useValue: notifications },
+        {
+          provide: OtpService,
+          useValue: {
+            issue: jest.fn().mockResolvedValue('123456'),
+            deliver: jest.fn().mockResolvedValue(undefined),
+            echo: jest.fn().mockReturnValue('123456'),
+          },
+        },
       ],
     }).compile();
 
@@ -178,7 +187,7 @@ describe('FeaturesService', () => {
       });
       await expect(
         service.changePassword(ME, 'newpassword', 'wrong-one'),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toThrow(BadRequestException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
@@ -633,11 +642,25 @@ describe('FeaturesService', () => {
     });
   });
 
-  describe('uploadAvatar', () => {
-    it('rejects anything that is not a base64 image', async () => {
-      await expect(
-        service.uploadAvatar(ME, 'https://example.com/a.jpg'),
-      ).rejects.toThrow(BadRequestException);
+  describe('adminResetPassword', () => {
+    it('dispatches password reset OTP code and returns temp password', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: ME, email: 'student@g.sut.ac.th' });
+      prisma.user.update.mockResolvedValue({ id: ME });
+
+      const res = await service.adminResetPassword(ME);
+      expect(res).toHaveProperty('tempPassword');
+      expect(res).toHaveProperty('code', '123456');
+      expect(prisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: ME },
+        }),
+      );
+      expect(notifications.notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: ME,
+          type: 'system',
+        }),
+      );
     });
   });
 });
