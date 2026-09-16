@@ -1296,34 +1296,37 @@ export class FeaturesService {
   }
 
   /**
-   * Aggregates for the Analytics screen. Year and faculty distributions come
-   * straight from `Profile`; the swipe funnel from the swipe/match/message
-   * pipeline; lifestyle weighting from the admin-configured match weights, so
-   * every number here reflects real rows rather than placeholder data.
+   * Aggregates for the Analytics screen. Matched ratio comes from active
+   * matches vs. total members; year/faculty distributions from `Profile`;
+   * lifestyle tag counts are derived by re-parsing every student's stored
+   * questionnaire answers the same way the discover deck does, so every
+   * number here reflects real rows rather than placeholder data.
    */
   async analytics() {
-    const [
-      profiles,
-      swipes,
-      matches,
-      conversationsWithMessages,
-      weights,
-      reportsByReason,
-    ] = await Promise.all([
-      this.prisma.profile.findMany({
-        select: { year: true, major: true },
-      }),
-      this.prisma.swipe.count(),
-      this.prisma.match.count(),
-      this.prisma.conversation.count({
-        where: { messages: { some: {} } },
-      }),
-      this.settings.matchWeights(),
-      this.prisma.report.groupBy({
-        by: ['reason'],
-        _count: { _all: true },
-      }),
-    ]);
+    const [totalMembers, profiles, activeMatches, answerRows] =
+      await Promise.all([
+        this.prisma.user.count({ where: { role: 'USER' } }),
+        this.prisma.profile.findMany({
+          select: { year: true, major: true },
+        }),
+        this.prisma.match.findMany({
+          where: { status: 'ACTIVE' },
+          select: { userAId: true, userBId: true },
+        }),
+        this.prisma.answer.findMany({
+          select: { userId: true, questionId: true, selections: true },
+        }),
+      ]);
+
+    const matchedUserIds = new Set<string>();
+    for (const m of activeMatches) {
+      matchedUserIds.add(m.userAId);
+      matchedUserIds.add(m.userBId);
+    }
+    const matchedPercent =
+      totalMembers > 0
+        ? Math.round((matchedUserIds.size / totalMembers) * 100)
+        : 0;
 
     const byYear = new Map<number, number>();
     const byMajor = new Map<string, number>();
@@ -1331,23 +1334,54 @@ export class FeaturesService {
       if (p.year != null) byYear.set(p.year, (byYear.get(p.year) ?? 0) + 1);
       if (p.major) byMajor.set(p.major, (byMajor.get(p.major) ?? 0) + 1);
     }
+    const totalWithYear = [...byYear.values()].reduce((a, b) => a + b, 0);
+
+    const answersByUser = new Map<string, typeof answerRows>();
+    for (const row of answerRows) {
+      const rows = answersByUser.get(row.userId) ?? [];
+      rows.push(row);
+      answersByUser.set(row.userId, rows);
+    }
+
+    const tagCounts = {
+      'Night Owl': 0,
+      Spotless: 0,
+      'Quiet Hours': 0,
+      'AC 25°C': 0,
+      'Library Study': 0,
+    };
+    for (const rows of answersByUser.values()) {
+      const lifestyle = parseAnswers(this.toStoredAnswers(rows));
+      if (lifestyle.sleep && lifestyle.sleep[0] >= 23 * 60)
+        tagCounts['Night Owl']++;
+      if (lifestyle.cleanHabits.includes('Spotless')) tagCounts.Spotless++;
+      // "Need for quiet" is a 0-8 slider; 6+ counts as wanting quiet hours.
+      if (lifestyle.quiet != null && lifestyle.quiet >= 6)
+        tagCounts['Quiet Hours']++;
+      if (lifestyle.acTemp === 25) tagCounts['AC 25°C']++;
+      if (lifestyle.studyPlace === 'Library') tagCounts['Library Study']++;
+    }
+    const respondents = answersByUser.size;
+    const pct = (count: number) =>
+      respondents > 0 ? Math.round((count / respondents) * 100) : 0;
 
     return {
+      matchedRatio: { matchedPercent, singlePercent: 100 - matchedPercent },
       yearDistribution: [...byYear.entries()]
         .sort((a, b) => b[1] - a[1])
-        .map(([year, count]) => ({ year, count })),
+        .map(([year, count]) => ({
+          year,
+          count,
+          percent:
+            totalWithYear > 0 ? Math.round((count / totalWithYear) * 100) : 0,
+        })),
       facultyDistribution: [...byMajor.entries()]
         .sort((a, b) => b[1] - a[1])
         .map(([major, count]) => ({ major, count })),
-      swipeFunnel: {
-        swiped: swipes,
-        matched: matches,
-        talking: conversationsWithMessages,
-      },
-      lifestyleWeights: weights,
-      reportsByReason: reportsByReason.map((r) => ({
-        reason: r.reason,
-        count: r._count._all,
+      lifestyleTags: Object.entries(tagCounts).map(([tag, count]) => ({
+        tag,
+        count,
+        percent: pct(count),
       })),
     };
   }
