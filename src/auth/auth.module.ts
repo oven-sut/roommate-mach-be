@@ -19,6 +19,6 @@ import { SupabaseOtpClient } from './supabase-otp.client';
   ],
   controllers: [AuthController],
   providers: [AuthService, OtpService, SupabaseOtpClient],
-  exports: [JwtModule],
+  exports: [JwtModule, OtpService],
 })
 export class AuthModule {}
