@@ -117,4 +117,8 @@ export class ProfileDto {
   @IsOptional()
   @IsBoolean()
   completed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  discoverable?: boolean;
 }

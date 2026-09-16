@@ -323,6 +323,20 @@ async function main() {
     }
   }
 
+  // Create "LIKE YOU" entries: 15 students who liked demoUser, but demoUser hasn't swiped back yet
+  const likers = createdUserIds.slice(30, 45);
+  for (const likerId of likers) {
+    await prisma.swipe.upsert({
+      where: { fromId_toId: { fromId: likerId, toId: demoUser.id } },
+      create: {
+        fromId: likerId,
+        toId: demoUser.id,
+        decision: SwipeDecision.LIKE,
+      },
+      update: {},
+    });
+  }
+
   const finalUserCount = await prisma.user.count();
   const finalProfileCount = await prisma.profile.count();
   const finalMatchCount = await prisma.match.count();
