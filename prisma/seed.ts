@@ -113,6 +113,26 @@ const BIOS = [
 ];
 const ANSWER_STYLES = ['owl', 'lark', 'balanced'] as const;
 
+const AVATAR_URLS_MALE = [
+  'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?auto=format&fit=crop&w=600&q=80',
+];
+
+const AVATAR_URLS_FEMALE = [
+  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1529626455594-4ff0802cfb7e?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1488426862026-3ee34a7d66df?auto=format&fit=crop&w=600&q=80',
+  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=600&q=80',
+];
+
 function pick<T>(arr: T[], seed: number): T {
   return arr[seed % arr.length];
 }
@@ -124,6 +144,7 @@ const SAMPLE_STUDENTS = Array.from({ length: DEMO_STUDENT_COUNT }, (_, i) => {
   const first = pick(isMale ? FIRST_NAMES_M : FIRST_NAMES_F, i);
   const last = pick(LAST_NAMES, i + 3);
   const answers = pick([...ANSWER_STYLES], i);
+  const avatar = pick(isMale ? AVATAR_URLS_MALE : AVATAR_URLS_FEMALE, i);
   const n = i + 1;
   return {
     email: `demo.student${n}@g.sut.ac.th`,
@@ -142,6 +163,7 @@ const SAMPLE_STUDENTS = Array.from({ length: DEMO_STUDENT_COUNT }, (_, i) => {
       zone: pick(ZONES, i),
       budgetMin: 2500 + (i % 6) * 500,
       budgetMax: 4500 + (i % 8) * 500,
+      photos: [avatar],
     },
   };
 });
@@ -167,6 +189,7 @@ SAMPLE_STUDENTS.unshift({
     zone: 'Gate 1',
     budgetMin: 3000,
     budgetMax: 5500,
+    photos: [AVATAR_URLS_MALE[0]],
   },
 });
 

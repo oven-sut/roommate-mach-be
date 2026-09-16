@@ -151,10 +151,14 @@ export class FeaturesService {
       update: clean,
     });
 
-    if (data.displayName) {
+    if (data.displayName || data.discoverable !== undefined) {
+      const userUpdate: Prisma.UserUpdateInput = {};
+      if (data.displayName) userUpdate.displayName = data.displayName;
+      if (data.discoverable !== undefined)
+        userUpdate.discoverable = data.discoverable;
       await this.prisma.user.update({
         where: { id: userId },
-        data: { displayName: data.displayName },
+        data: userUpdate,
       });
     }
 
@@ -619,14 +623,25 @@ export class FeaturesService {
       ]),
     );
 
-    return visible.map((match) => {
-      const other = match.userAId === userId ? match.userB : match.userA;
-      return {
-        ...match,
-        other,
-        conversationId: conversationByOther.get(other.id) ?? null,
-      };
-    });
+    const [mine, weights] = await Promise.all([
+      this.answersFor(userId).then(parseAnswers),
+      this.settings.matchWeights(),
+    ]);
+
+    return Promise.all(
+      visible.map(async (match) => {
+        const other = match.userAId === userId ? match.userB : match.userA;
+        const theirs = parseAnswers(await this.answersFor(other.id));
+        const { score, breakdown } = compareLifestyles(mine, theirs, weights);
+        return {
+          ...match,
+          score: score ?? match.score,
+          breakdown,
+          other,
+          conversationId: conversationByOther.get(other.id) ?? null,
+        };
+      }),
+    );
   }
 
   /**
@@ -670,16 +685,43 @@ export class FeaturesService {
       orderBy: { updatedAt: 'desc' },
     });
 
-    return rows
-      .map((conversation) => ({
-        ...conversation,
-        other:
-          conversation.userAId === userId
-            ? conversation.userB
-            : conversation.userA,
-        unread: conversation._count.messages,
-      }))
-      .filter((conversation) => !blocked.has(conversation.other.id));
+    const [mine, weights] = await Promise.all([
+      this.answersFor(userId).then(parseAnswers),
+      this.settings.matchWeights(),
+    ]);
+
+    const items = rows
+      .map((conversation) => {
+        const lastMsgTime = conversation.messages[0]?.createdAt
+          ? new Date(conversation.messages[0].createdAt).getTime()
+          : 0;
+        const updateTime = conversation.updatedAt
+          ? new Date(conversation.updatedAt).getTime()
+          : 0;
+        return {
+          ...conversation,
+          sortTime: Math.max(lastMsgTime, updateTime),
+          other:
+            conversation.userAId === userId
+              ? conversation.userB
+              : conversation.userA,
+          unread: conversation._count.messages,
+        };
+      })
+      .filter((conversation) => !blocked.has(conversation.other.id))
+      .sort((a, b) => b.sortTime - a.sortTime);
+
+    return Promise.all(
+      items.map(async (conv) => {
+        const theirs = parseAnswers(await this.answersFor(conv.other.id));
+        const { score, breakdown } = compareLifestyles(mine, theirs, weights);
+        return {
+          ...conv,
+          score,
+          breakdown,
+        };
+      }),
+    );
   }
 
   /** Finds or creates the thread for a match, by match id or by the other user. */
@@ -1344,14 +1386,18 @@ export class FeaturesService {
 
   /** Summary counters for the Report screen's cards - unaffected by paging. */
   async reportSummary() {
-    const [total, pending, byReason] = await Promise.all([
+    const [total, pending, resolved, dismissed, byReason] = await Promise.all([
       this.prisma.report.count(),
       this.prisma.report.count({ where: { status: 'PENDING' } }),
+      this.prisma.report.count({ where: { status: 'RESOLVED' } }),
+      this.prisma.report.count({ where: { status: 'DISMISSED' } }),
       this.prisma.report.groupBy({ by: ['reason'], _count: { _all: true } }),
     ]);
     return {
       total,
       pending,
+      resolved,
+      dismissed,
       byReason: byReason
         .map((r) => ({ reason: r.reason, count: r._count._all }))
         .sort((a, b) => b.count - a.count),
@@ -1399,9 +1445,9 @@ export class FeaturesService {
         (sum, value) => sum + (Number(value) || 0),
         0,
       );
-      if (total <= 0)
+      if (total !== 100)
         throw new BadRequestException(
-          'Match weights must add up to more than 0',
+          'Match weights must add up to exactly 100%',
         );
       await this.settings.write('weights', weights);
     }
