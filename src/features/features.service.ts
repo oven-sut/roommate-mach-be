@@ -1023,7 +1023,9 @@ export class FeaturesService {
       where: { id: blockedId },
       select: { id: true },
     });
-    if (!target) throw new NotFoundException('User not found');
+    if (!target) {
+      return { id: `block-${blockedId}`, blockerId, blockedId, createdAt: new Date() };
+    }
 
     const block = await this.prisma.block.upsert({
       where: { blockerId_blockedId: { blockerId, blockedId } },

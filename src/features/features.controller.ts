@@ -230,7 +230,7 @@ export class FeaturesController {
   @Post('reports/:userId')
   report(
     @Req() r: AuthReq,
-    @Param('userId', ParseUUIDPipe) id: string,
+    @Param('userId') id: string,
     @Body() b: ReportDto,
   ) {
     return this.f.report(r.user.id, id, b.reason, b.details);
@@ -242,12 +242,12 @@ export class FeaturesController {
   }
 
   @Post('blocks/:userId')
-  block(@Req() r: AuthReq, @Param('userId', ParseUUIDPipe) id: string) {
+  block(@Req() r: AuthReq, @Param('userId') id: string) {
     return this.f.block(r.user.id, id);
   }
 
   @Delete('blocks/:userId')
-  unblock(@Req() r: AuthReq, @Param('userId', ParseUUIDPipe) id: string) {
+  unblock(@Req() r: AuthReq, @Param('userId') id: string) {
     return this.f.unblock(r.user.id, id);
   }
 
